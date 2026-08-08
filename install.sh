@@ -328,11 +328,81 @@ backup_path() {
   fi
 }
 
+revalidate_migration_pair() {
+  python3 - "$legacy_destination" "$legacy_backup_path" "$historical_luna_sha256" "$historical_terra_sha256" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+destination, backup, *historical_hashes = sys.argv[1:]
+historical_hashes = set(historical_hashes)
+
+
+def open_regular(path: str):
+    fd = -1
+    try:
+        metadata = os.lstat(path)
+        if not stat.S_ISREG(metadata.st_mode):
+            return None
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(path, flags)
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+            os.close(fd)
+            fd = -1
+            return None
+        stream = os.fdopen(fd, "rb", closefd=True)
+        fd = -1
+        return stream
+    except OSError:
+        if fd >= 0:
+            os.close(fd)
+        return None
+
+
+destination_stream = open_regular(destination)
+backup_stream = open_regular(backup)
+valid = destination_stream is not None and backup_stream is not None
+destination_digest = hashlib.sha256()
+backup_digest = hashlib.sha256()
+
+try:
+    if valid:
+        while True:
+            destination_chunk = destination_stream.read(1024 * 1024)
+            backup_chunk = backup_stream.read(1024 * 1024)
+            if destination_chunk != backup_chunk:
+                valid = False
+            destination_digest.update(destination_chunk)
+            backup_digest.update(backup_chunk)
+            if not destination_chunk and not backup_chunk:
+                break
+finally:
+    if destination_stream is not None:
+        destination_stream.close()
+    if backup_stream is not None:
+        backup_stream.close()
+
+valid = (
+    valid
+    and destination_digest.hexdigest() in historical_hashes
+    and backup_digest.hexdigest() in historical_hashes
+    and destination_digest.digest() == backup_digest.digest()
+)
+print("VALID" if valid else "INVALID")
+PY
+}
+
 if [[ "$legacy_state" == "KNOWN_HISTORICAL" ]]; then
   legacy_backup_path="$backup_destination/agents/docs_researcher.toml"
   backup_path "$legacy_destination" "agents/docs_researcher.toml"
-  if [[ ! -f "$legacy_backup_path" || -L "$legacy_backup_path" ]] || ! cmp -s "$legacy_destination" "$legacy_backup_path"; then
+  if [[ ! -f "$legacy_backup_path" || -L "$legacy_backup_path" ]]; then
     printf 'Legacy migration backup verification failed; preserving %s.\n' "$legacy_destination" >&2
+    exit 1
+  fi
+  if [[ "$(revalidate_migration_pair)" != "VALID" ]]; then
+    printf 'Legacy migration revalidation failed; preserving current destination: %s.\n' "$legacy_destination" >&2
     exit 1
   fi
   rm -f "$legacy_destination"

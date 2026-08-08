@@ -156,6 +156,49 @@ assert_migration_backup() {
   cmp -s "$original" "$restoration" || fail "migration backup could not restore the legacy payload"
 }
 
+assert_revalidation_failure() {
+  local target="$test_root/project-revalidation"
+  local agent_dir="$target/.codex/agents"
+  local legacy="$agent_dir/docs_researcher.toml"
+  local target_real
+  local original="$test_root/project-revalidation-original.toml"
+  local hook_bin="$test_root/revalidation-hook-bin"
+  local output="$test_root/project-revalidation-output"
+  mkdir -p "$agent_dir" "$hook_bin"
+  target_real="$(cd "$target" && pwd -P)"
+  write_historical_payload luna "$legacy"
+  cp "$legacy" "$original"
+  cat > "$hook_bin/cp" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+"$VERSATILE_TEST_REAL_CP" "$@"
+destination="$3"
+if [[ "$VERSATILE_TEST_MUTATE_LEGACY" == "1" && "$destination" == */agents/docs_researcher.toml ]]; then
+  printf '# deterministic revalidation mutation\n' >> "$VERSATILE_TEST_LEGACY_PATH"
+fi
+EOF
+  chmod +x "$hook_bin/cp"
+  if PATH="$hook_bin:$PATH" \
+    VERSATILE_TEST_REAL_CP="$(command -v cp)" \
+    VERSATILE_TEST_MUTATE_LEGACY=1 \
+    VERSATILE_TEST_LEGACY_PATH="$legacy" \
+    "$bundle_root/install.sh" \
+      --scope project \
+      --target "$target" \
+      --profile luna-v1 > "$output" 2>&1; then
+    fail 'revalidation mutation must fail closed'
+  fi
+  assert_contains "$output" "Legacy migration revalidation failed; preserving current destination: $target_real/.codex/agents/docs_researcher.toml"
+  assert_file "$legacy"
+  assert_contains "$legacy" '# deterministic revalidation mutation'
+  assert_absent "$target/.agents"
+  assert_absent "$target/.codex/config.toml"
+  assert_absent "$target/.codex/versatile-agent/install-manifest.json"
+  assert_absent "$agent_dir/docs_researcher_luna.toml"
+  assert_absent "$agent_dir/docs_researcher_terra.toml"
+  assert_migration_backup "$target" "$original"
+}
+
 assert_no_conflict_writes() {
   local name="$1"
   local mode="$2"
@@ -422,6 +465,7 @@ assert_migration_backup "$user_migrate_codex" "$user_migrate_original"
 assert_no_conflict_writes customized normal
 assert_no_conflict_writes symlink check
 assert_no_conflict_writes directory dry-run
+assert_revalidation_failure
 
 fake_v1="$test_root/fake-codex-v1"
 cat > "$fake_v1" <<'EOF'
