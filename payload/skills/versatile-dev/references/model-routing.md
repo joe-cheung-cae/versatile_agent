@@ -1,83 +1,147 @@
-# Model and interface routing
+# 模型与接口路由
 
-## Contents
+## P0 支持边界
 
-- [Routing order](#routing-order)
-- [Role defaults](#role-defaults)
-- [Luna fallback](#luna-fallback)
-- [Context transfer](#context-transfer)
-- [Audit record](#audit-record)
+本节冻结目标语义，**不**声明 Codex CLI 会自动切换模型。目标 native
+research route 由 Skill 显式编排两个独立的 named agents：
 
-## Routing order
+1. `docs_researcher_luna`，请求 `gpt-5.6-luna` / `max`；
+2. 仅在 Luna 出现可分类的 native-routing failure 后，显式重派
+   `docs_researcher_terra`，最多一次，请求 `gpt-5.6-terra` / `high`。
 
-Use current-session evidence in this order:
+两次尝试必须使用同一个 canonical `task_packet_hash`；Terra 的
+`fallback_attempt` 最大为 `1`。这不是 CLI 内部的 automatic fallback。
 
-1. Active native spawn tool schema and returned agent details.
-2. `scripts/detect-runtime.sh` results for CLI and App-bundled CLI.
-3. Installed custom-agent TOML.
-4. Project `[agents]` defaults.
-5. Parent model and effort.
+当前安装器仍安装互斥的 legacy `docs_researcher` profile，尚未安装上述
+双 agent，也尚未提供确定性 route helper 或 live conformance。它们是后续
+阶段的实现；当前不得声称已执行或已验证目标 native route。
 
-If sources conflict, prefer the active callable interface and record the
-conflict.
+在双 agent 安装前，当前可执行行为是一个独立的 legacy single configured
+route：安装器只提供一个 profile-selected `docs_researcher`。只有同一 active
+native interface 暴露该**确切** agent type，且该次 native attempt 的 details
+验证 configured agent type、model 和 effort 时，才可委派一次研究。它不是
+Luna→Terra pair，也不产生 fallback success；exposure/effective evidence 缺失或
+冲突时为 `STOP_UNVERIFIED`，不得启动 alternate role。
 
-## Role defaults
+这些冻结语义的 regression assertions 属于后续 validator 和 forward-test 修复
+项；P0 不修改测试或把文档契约误报为 live conformance。
 
-- Sol/High or higher: architecture, independent review, security, numerical,
-  and high-consequence boundary reasoning.
-- Terra/Medium or High: implementation, exploration, testing, profiling, and
-  the general native fallback lane.
-- Luna/Max: narrow, explicit, repeatable research or high-throughput support
-  work when the interface supports the combination.
+## 证据分层与 runtime record
 
-Model pins in installed agent files take precedence over `[agents]` defaults.
+不得将 CLI、App-bundled CLI、native spawn 和 App task 的数据拼接为一个
+runtime，除非有明确 bridge evidence。每个 runtime 独立记录：
 
-## Luna fallback
+```text
+schema_version
+runtime_id
+binary_path
+version
+interface_kind
+multi_agent_generation
+exposed_agent_types
+model_support
+effort_support
+evidence_source
+captured_at
+diagnostic_only
+```
 
-Apply this decision table:
+层次必须保持分离：
 
-| Runtime evidence | Effective route |
-| --- | --- |
-| Native V2 exposes Luna and Max | Luna/Max |
-| Native V2 exists but omits Luna | Terra/High fallback |
-| CLI V1 custom agents support Luna and Max | Luna/Max V1 profile |
-| Luna or Max validation fails | Terra/High fallback |
-| App task tools expose Luna/Max and the user explicitly requests a separate visible task | Luna/Max App task |
+| 层 | 可用证据 | 不可推导的结论 |
+| --- | --- | --- |
+| installed | 文件路径、install manifest、`selected_profile` | 当前任务实际运行的 route |
+| configured | custom-agent TOML、`[agents]` default | native runtime 实际采纳的 model/effort |
+| capability | CLI/App-bundled CLI probe、model catalog、active interface schema | 某次 native attempt 已接受或实际生效 |
+| requested | 本次 native spawn 的 agent/model/effort 请求 | 请求已被接受或生效 |
+| observed | 返回的 native runtime details、sandbox/permission details | 未返回字段的值 |
+| effective | 与 observed native details 一一对应的 model/effort | CLI/App probe、catalog 或 TOML 的推测 |
 
-Do not silently substitute. Emit `fallback_reason` and continue only when Terra
-can satisfy the task.
+`scripts/detect-runtime.sh`、model catalog 及 `--native-v2-luna yes` 只能是
+capability/diagnostic evidence，并必须标记 `diagnostic_only=true`。即使 probe
+建议或安装器选择了 profile，`selected_profile` 也只是 install-time 选择，
+不是 effective runtime route。
 
-Use this fallback order when a Luna profile was installed but the active spawn
-schema proves it cannot be honored:
+## 目标 native 状态与失败分类
 
-1. Spawn a read-only built-in/default agent with an explicit Terra/High override
-   when the schema supports model and effort overrides.
-2. Otherwise send the same narrow research packet to `code_mapper`, record its
-   effective Terra/Medium pin, and prohibit code edits.
-3. If neither route is observable, keep the research in the lead task and report
-   that no subagent fallback was available.
+目标 pair 的 `PRECHECK` 先于任何 spawn：同一 active native interface 必须
+同时暴露 `docs_researcher_luna` 和 `docs_researcher_terra`。exposure metadata
+缺失、不可观测，或只暴露其中一个 type 时，立即 `STOP_UNVERIFIED`；不得
+spawn Luna、Terra 或 alternate role。此时不存在可分类的 Luna attempt。
 
-The App task route is not a native subagent thread. Do not create a user-visible
-task without explicit authorization, and do not describe it as a V2 spawn.
+PRECHECK 成功后才可 spawn Luna。只有该次 Luna native spawn 从**同一
+interface** 返回明确且可归因的 routing rejection，才是
+`NATIVE_ROUTING_FAILURE`：包括 requested role/model/effort 不可用、access
+denied、spawn 明确因这些 routing 条件被拒绝，或完整的 same-attempt observed
+role/model/effort 明确不匹配 requested/configured route。这个已实际发生的
+rejection 或 mismatch 可进入 `FALLBACK_PENDING`。已接受或运行中的 Luna
+attempt 若缺少、内部冲突、跨 runtime 混用或不可观测的 effective metadata，
+始终是 `STOP_UNVERIFIED`，不触发 Terra。
+
+| 事件 | 状态 | 是否可重派 Terra |
+| --- | --- | --- |
+| PRECHECK 的 exposure metadata 缺失/不可观测，或同一 interface 未同时暴露两个 target type | `STOP_UNVERIFIED`，不 spawn | 否 |
+| Luna attempt 收到同一 interface 的明确、可归因 routing rejection，或完整 observed role/model/effort 明确不匹配 requested/configured route | `FALLBACK_PENDING`，随后至多一次 `docs_researcher_terra` | 是 |
+| 已接受/运行 Luna attempt 的 effective metadata 缺失、冲突、不可观测，或不同 runtime 的证据被混用 | `STOP_UNVERIFIED` | 否 |
+| Luna 的 observed agent/model/effort 与请求和配置一致 | `DONE_LUNA` | 否 |
+| Terra attempt 的 observed agent/model/effort 与请求和配置一致 | `DONE_TERRA` | 否 |
+| 内容质量、工具调用、任务执行失败 | `STOP_FAILED` | 否 |
+| timeout 或未知异常 | `STOP_FAILED`；若同时缺 effective metadata，优先 `STOP_UNVERIFIED` | 否 |
+| Terra 尝试后任何路由或执行失败 | `STOP_FAILED`；缺/冲突 effective metadata 时为 `STOP_UNVERIFIED` | 否 |
+
+只有表中第二行的、发生在 PRECHECK 成功之后的
+`NATIVE_ROUTING_FAILURE` 允许显式创建 Terra 尝试。不得把 PRECHECK 中的
+type 缺失，或“Luna 不可用”的 probe、TOML profile、模型 catalog、配置选择，
+视为这类失败或直接启动 Terra。每次 STOP 都要保留 failure class 和原始
+evidence。
+
+`failure_class` 使用以下封闭分类：`NONE`、`NATIVE_ROUTING_FAILURE`、
+`ROUTE_METADATA_MISSING`、`ROUTE_METADATA_CONFLICT`、`TASK_FAILURE`、
+`TIMEOUT`、`UNKNOWN_EXCEPTION`。只有 `NATIVE_ROUTING_FAILURE` 可进入
+`FALLBACK_PENDING`；metadata 类始终失败关闭为 `STOP_UNVERIFIED`。
+
+## App task lane
+
+Codex App 的 user-visible task 是独立的 explicit opt-in lane，不是 native
+subagent thread，也不是 Luna→Terra fallback。只有用户明确授权创建可见任务
+时才可使用；App capability 或创建结果不得证明 native route 的 effective
+model/effort。App task 记录可保留 requested/observed App 事实，但不得填充
+native `effective_*` 字段。
+
+## Per-attempt audit
+
+每次 native 尝试都记录下列字段；字段未知时保留 `unknown`，不要回填猜测值：
+
+```text
+attempt_id
+task_packet_hash
+interface
+requested_agent_type
+requested_model
+requested_effort
+configured_agent_type
+configured_model
+configured_effort
+observed_agent_type
+observed_effective_model
+observed_effective_effort
+requested_sandbox
+observed_sandbox
+permission_profile
+status
+failure_class
+fallback_reason
+fallback_attempt
+evidence_source
+```
+
+`configured_*` 只能来自 TOML；`observed_effective_*` 只能来自本次 native
+runtime details。不得用 installed/configured/capability data 填 effective
+字段。Luna 与 Terra 使用相同 task packet，除 agent/model/effort 和路由审计
+元数据外不改变任务内容。
 
 ## Context transfer
 
-Subagent V2 history forking is a transport option, not a reason to copy all
-parent context. Prefer a complete task packet with no history. Use a bounded
-positive fork only when exact recent exchanges are essential. V1 receives the
-same explicit packet without unsupported fork arguments.
-
-## Audit record
-
-Keep this compact record for every non-default route:
-
-```text
-role:
-interface: native-v2 | native-v1 | app-task | single-agent
-requested_model:
-requested_effort:
-effective_model:
-effective_effort:
-fallback_reason: none | <reason>
-evidence:
-```
+Subagent V2 history forking 是传输选项，不是复制全部 parent context 的理由。
+优先使用完整 task packet 与 `fork_turns: none`；仅在确有必要时使用小的
+positive fork。V1 不支持时省略该字段，但仍使用同一完整 packet。

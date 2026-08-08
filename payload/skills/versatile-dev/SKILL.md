@@ -1,6 +1,6 @@
 ---
 name: versatile-dev
-description: Adaptive end-to-end software engineering workflow for non-trivial repository work. Use when a task needs codebase understanding, dynamic planning, implementation, tests, independent review, review-fix loops, CUDA/HPC/numerical specialization, or capability-aware routing across Codex Sol, Terra, and Luna subagents.
+description: Adaptive end-to-end software engineering workflow for non-trivial repository work. Use when a task needs codebase understanding, dynamic planning, implementation, tests, independent review, review-fix loops, CUDA/HPC/numerical specialization, or evidence-bounded Codex agent routing. Do not use it to claim that Codex CLI automatically switches models or that a capability probe proves an effective route.
 ---
 
 # Versatile Development
@@ -13,19 +13,41 @@ graph to evidence; do not run a fixed agent pipeline.
 
 Before the first delegation in a task:
 
-1. Run `scripts/detect-runtime.sh --format json` from this skill directory.
-2. Inspect the active native spawn tool schema when it is visible. Record
-   whether it exposes `fork_turns`, the requested custom `agent_type`, model
-   overrides, and Luna.
-3. Treat tool-schema evidence as more specific than the CLI feature probe for
-   the current session.
-4. Apply the routing rules in [references/model-routing.md](references/model-routing.md).
-5. Record `requested_model`, `requested_effort`, `effective_model`,
-   `effective_effort`, and any `fallback_reason` in the task state.
+1. Run `scripts/detect-runtime.sh --format json` from this skill directory and
+   retain its CLI/App-bundled-CLI results as separate `diagnostic_only` runtime
+   records. A probe, model catalog, TOML, `[agents]` default, install manifest,
+   or `selected_profile` is configured/capability evidence, never proof of an
+   effective route.
+2. Inspect the active native spawn interface and record its exposed agent types.
+   Do not combine exposure evidence from different runtimes without an explicit
+   bridge.
+3. For every native attempt, inspect the returned native runtime details. Only
+   those same-attempt details may supply `observed_effective_model` and
+   `observed_effective_effort`; do not infer them from configuration or probes.
+4. Apply the target or current-legacy state rules in
+   [references/model-routing.md](references/model-routing.md). Record a complete
+   per-attempt audit rather than inferring a result from configuration.
+5. If required agent exposure or effective route metadata is absent, conflicting,
+   or unobservable, stop as `STOP_UNVERIFIED`. Do not substitute a model or
+   infer success.
 
-Never claim Subagent V2, Luna, Max, or a custom role is active unless the
-current runtime exposes or verifies it. Use Terra as the default fallback for a
-Luna route that the current native interface cannot honor.
+The target native research route is an explicit orchestration pair, not Codex
+CLI automatic model fallback: first `docs_researcher_luna`
+(`gpt-5.6-luna`/`max`), then at most one `docs_researcher_terra`
+(`gpt-5.6-terra`/`high`) attempt only after a classified Luna native-routing
+failure. Both attempts use the same canonical task-packet hash. Content, tool,
+task, timeout, and unknown-exception failures never trigger Terra.
+
+Current implementation boundary: this P0 documentation freezes that contract,
+but the installed bundle provides exactly one profile-selected legacy
+`docs_researcher` agent. It may receive one research delegation only when the
+same active interface exposes exactly that type and native details from that
+attempt verify the configured agent type, model, and effort. This is one
+configured route, never the target pair or fallback success. Missing or
+conflicting exposure/effective evidence is `STOP_UNVERIFIED`; do not launch an
+alternate role. The dual-agent installer, deterministic route helper, and live
+conformance verification are future work. Once both target named agents are
+installed, use the frozen pair contract instead.
 
 ## Keep the lead context clean
 
@@ -70,8 +92,12 @@ Use only agents that materially improve the result:
 
 - `code_mapper`: repository paths, symbols, execution flow, tests, and change
   boundaries.
-- `docs_researcher`: narrow documentation or vendor research. Prefer Luna/Max;
-  use the explicit Terra fallback route when Luna is unavailable.
+- `docs_researcher_luna` / `docs_researcher_terra`: target, distinct native
+  documentation-research pair. Attempt Luna first and at most one Terra attempt
+  only after the classified routing failure defined in the routing reference,
+  after both are installed. Before that, the current legacy `docs_researcher`
+  can run once only under the verified single-configured-route rule; it is not
+  this pair.
 - `architect`: cross-module design, public interfaces, compatibility, and
   implementation order.
 - `implementer`: the default writer for bounded code changes.
@@ -122,9 +148,11 @@ Finish only when all applicable conditions hold:
 - requested behavior is implemented;
 - relevant builds and tests pass, or environmental limits are explicit;
 - no validated blocking review finding remains;
-- model routing and any fallback are truthfully recorded;
+- model routing is truthfully recorded with installed, configured, requested,
+  observed, and effective layers kept distinct; missing or conflicting effective
+  metadata is `STOP_UNVERIFIED`;
 - changed files remain within authorized scope;
 - remaining risks are visible to the user.
 
-Report what changed, key decisions, validation, review outcome, effective agent
-routing, and remaining risks.
+Report what changed, key decisions, validation, review outcome, observed effective
+routing (or `STOP_UNVERIFIED` when it cannot be established), and remaining risks.
