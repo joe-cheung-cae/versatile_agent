@@ -9,19 +9,23 @@
         "gpt-5.6-terra": ["high"]
       },
       "evidence_source": {
-        "kind": "fixture",
-        "runtime_id": "fixture-conflicting-observation",
+        "kind": "fixture_native_spawn_attempt",
+        "runtime_id": "fixture-native-route-mismatch",
         "scope": "single-runtime"
       },
-      "exposed_agent_types": ["docs_researcher_luna"],
+      "exposed_agent_types": ["docs_researcher_luna", "docs_researcher_terra"],
       "interface_kind": "native_spawn_attempt",
       "model_support": ["gpt-5.6-luna", "gpt-5.6-terra"],
       "multi_agent_generation": "v2",
       "observed": {
-        "effective_model": "gpt-5.6-terra",
-        "model": "gpt-5.6-luna"
+        "agent_type": "docs_researcher_luna",
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "effective_agent_type": "docs_researcher_terra",
+        "effective_effort": "high",
+        "effective_model": "gpt-5.6-terra"
       },
-      "runtime_id": "fixture-conflicting-observation",
+      "runtime_id": "fixture-native-route-mismatch",
       "schema_version": 1,
       "version": "unknown"
     }

@@ -92,6 +92,8 @@ class RuntimeRecordTests(unittest.TestCase):
         self.assertEqual(second_result.returncode, 0, second_result.stderr)
         first = json.loads(first_result.stdout)
         second = json.loads(second_result.stdout)
+        self.assertTrue(all(record["evidence_source"]["kind"] == "detector_probe" for record in first["records"]))
+        self.assertTrue(all(record["evidence_source"]["kind"] == "detector_probe" for record in second["records"]))
         self.assertNotEqual(
             {record["runtime_id"] for record in first["records"]},
             {record["runtime_id"] for record in second["records"]},
@@ -159,10 +161,10 @@ class RuntimeRecordTests(unittest.TestCase):
         self.assertEqual(native_record["interface_kind"], "native_spawn_attempt")
         result = MODULE.query_record(
             native,
-           runtime_id=native_record["runtime_id"],
+            runtime_id=native_record["runtime_id"],
             require_effective_agent_type="docs_researcher_luna",
-           require_effective_model="gpt-5.6-luna",
-           require_effective_effort="max",
+            require_effective_model="gpt-5.6-luna",
+            require_effective_effort="max",
         )
         self.assertEqual(result["runtime_id"], native_record["runtime_id"])
 
@@ -213,12 +215,37 @@ class RuntimeRecordTests(unittest.TestCase):
             {"cli_binary", "app_bundled_cli"},
         )
 
+    def test_requested_effective_mismatch_is_valid_native_evidence(self) -> None:
+        document = read_fixture("native-route-mismatch.json")
+        MODULE.validate_document(document)
+        record = document["records"][0]
+        result = MODULE.query_record(
+            document,
+            runtime_id=record["runtime_id"],
+            require_effective_agent_type="docs_researcher_terra",
+            require_effective_model="gpt-5.6-terra",
+            require_effective_effort="high",
+        )
+        self.assertEqual(result["runtime_id"], record["runtime_id"])
+
+        with self.assertRaises(MODULE.RuntimeRecordError) as context:
+            MODULE.query_record(
+                document,
+                runtime_id=record["runtime_id"],
+                require_effective_agent_type="docs_researcher_luna",
+                require_effective_model="gpt-5.6-luna",
+                require_effective_effort="max",
+            )
+        self.assertIn("does not match", str(context.exception))
+        self.assertNotIn("STOP_UNVERIFIED", str(context.exception))
+
     def test_invalid_and_unknown_fact_inputs_fail_nonzero(self) -> None:
         for fixture in (
             "missing-field.json",
             "duplicate-runtime-id.json",
             "mixed-evidence.json",
-            "conflicting-observation.json",
+            "app-task-provenance-on-native.json",
+            "native-provenance-on-app-task.json",
             "mismatched-provenance.json",
             "disguised-composite.json",
             "unknown-model-known-effort.json",

@@ -6,7 +6,7 @@
       "diagnostic_only": false,
       "effort_support": "unknown",
       "evidence_source": {
-        "kind": "fixture",
+        "kind": "fixture_native_spawn_attempt",
         "runtime_id": "fixture-unknown-facts",
         "scope": "single-runtime"
       },

@@ -5,7 +5,7 @@
       "captured_at": "2026-08-08T00:00:00Z",
       "diagnostic_only": true,
       "evidence_source": {
-        "kind": "fixture",
+        "kind": "fixture_cli_binary",
         "runtime_id": "fixture-missing-effort",
         "scope": "single-runtime"
       },

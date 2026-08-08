@@ -18,7 +18,7 @@
         "gpt-5.6-terra": ["high"]
       },
       "evidence_source": {
-        "kind": "fixture",
+        "kind": "fixture_cli_binary",
         "runtime_id": "fixture-cli-v2",
         "scope": "single-runtime"
       },
@@ -38,7 +38,7 @@
         "gpt-5.6-luna": ["max"]
       },
       "evidence_source": {
-        "kind": "fixture",
+        "kind": "fixture_app_bundled_cli",
         "runtime_id": "fixture-app-luna-only",
         "scope": "single-runtime"
       },

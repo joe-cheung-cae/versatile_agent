@@ -6,15 +6,15 @@
       "diagnostic_only": false,
       "effort_support": {},
       "evidence_source": {
-        "kind": "fixture_native_spawn_attempt",
-        "runtime_id": "fixture-other-runtime",
+        "kind": "app_task_details",
+        "runtime_id": "fixture-app-task-provenance-on-native",
         "scope": "single-runtime"
       },
       "exposed_agent_types": [],
       "interface_kind": "native_spawn_attempt",
       "model_support": [],
       "multi_agent_generation": "none",
-      "runtime_id": "fixture-mismatched-provenance",
+      "runtime_id": "fixture-app-task-provenance-on-native",
       "schema_version": 1,
       "version": "unknown"
     }

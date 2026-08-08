@@ -33,7 +33,9 @@ EXPECTED_COMMON_FILES = {f"{name}.toml" for name in EXPECTED_COMMON}
 RUNTIME_RECORD_FIXTURES = {
     "app-task.json",
     "cli-and-app-records.json",
-    "conflicting-observation.json",
+    "app-task-provenance-on-native.json",
+    "native-route-mismatch.json",
+    "native-provenance-on-app-task.json",
     "disguised-composite.json",
     "duplicate-runtime-id.json",
     "mismatched-provenance.json",

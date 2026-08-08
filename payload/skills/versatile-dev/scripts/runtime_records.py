@@ -28,8 +28,8 @@ Required record fields:
     Model slugs and a model-to-efforts mapping, or explicit ``unknown``.
 ``evidence_source``
     An object with ``kind``, ``runtime_id``, and ``scope``.  The kind must be
-    known, the runtime ID must equal this record ID, and scope must be
-    ``single-runtime``.
+    allowed for this interface, the runtime ID must equal this record ID, and
+    scope must be ``single-runtime``.
 ``captured_at`` / ``diagnostic_only``
     Capture timestamp and whether the record is diagnostic-only evidence.
 
@@ -37,9 +37,10 @@ Optional native/App-task observations live inside that same record under
 ``observed``. Plain ``agent_type``/``model``/``effort`` values are requested or
 non-effective observations. Native effective queries require the exact
 ``effective_agent_type``/``effective_model``/``effective_effort`` fields from a
-single ``native_spawn_attempt`` record. The query operation always selects one
-``runtime_id`` before checking facts, so it cannot assemble a route from
-complementary records.
+single ``native_spawn_attempt`` record. Requested and effective values may
+differ; that is valid native-routing evidence and query-time mismatch evidence.
+The query operation always selects one ``runtime_id`` before checking facts, so
+it cannot assemble a route from complementary records.
 No routing state transitions are implemented here.
 """
 
@@ -84,10 +85,10 @@ PROBE_KINDS = {"cli_binary", "app_bundled_cli"}
 GENERATION_VALUES = {"none", "v1", "v2", "unknown"}
 UNKNOWN = "unknown"
 EVIDENCE_SOURCE_KINDS = {
-    "detector_probe",
-    "fixture",
-    "native_spawn_details",
-    "app_task_details",
+    "cli_binary": {"detector_probe", "fixture_cli_binary"},
+    "app_bundled_cli": {"detector_probe", "fixture_app_bundled_cli"},
+    "native_spawn_attempt": {"native_spawn_details", "fixture_native_spawn_attempt"},
+    "app_task": {"app_task_details", "fixture_app_task"},
 }
 EVIDENCE_SOURCE_FIELDS = {"kind", "runtime_id", "scope"}
 OBSERVED_KEYS = {
@@ -134,7 +135,7 @@ def _validate_string_list(value: Any, location: str) -> None:
         raise _fail(location, "contains duplicate values")
 
 
-def _validate_evidence_source(value: Any, location: str, runtime_id: str) -> None:
+def _validate_evidence_source(value: Any, location: str, runtime_id: str, interface_kind: str) -> None:
     if not isinstance(value, dict):
         raise _fail(location, "must be a strict single-runtime object")
     if "runtime_ids" in value:
@@ -146,8 +147,11 @@ def _validate_evidence_source(value: Any, location: str, runtime_id: str) -> Non
     if extra:
         raise _fail(location, f"unsupported provenance fields: {sorted(extra)}")
     _require_string(value["kind"], f"{location}.kind")
-    if value["kind"] not in EVIDENCE_SOURCE_KINDS:
-        raise _fail(location, "unsupported provenance kind: " + str(value["kind"]))
+    if value["kind"] not in EVIDENCE_SOURCE_KINDS[interface_kind]:
+        raise _fail(
+            location,
+            f"provenance kind {value['kind']!r} is not allowed for interface_kind {interface_kind}",
+        )
     _require_string(value["runtime_id"], f"{location}.runtime_id")
     if value["runtime_id"] != runtime_id:
         raise _fail(location, "provenance runtime_id does not match record runtime_id")
@@ -168,14 +172,6 @@ def _validate_observed(record: dict[str, Any], location: str) -> None:
         raise _fail(location, f"unsupported keys: {sorted(unknown_keys)}")
     for key, value in observed.items():
         _require_string(value, f"{location}.{key}", allow_empty=False)
-    for plain, effective in (
-        ("agent_type", "effective_agent_type"),
-        ("model", "effective_model"),
-        ("effort", "effective_effort"),
-    ):
-        if plain in observed and effective in observed:
-            if observed[plain] != UNKNOWN and observed[effective] != UNKNOWN and observed[plain] != observed[effective]:
-                raise _fail(location, f"conflicting {plain} and {effective}")
     if record["interface_kind"] == "app_task":
         effective_keys = set(observed) & {"effective_agent_type", "effective_model", "effective_effort"}
         if effective_keys:
@@ -225,7 +221,12 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
                     f"contains models absent from model_support: {extra_models}",
                 )
 
-    _validate_evidence_source(record["evidence_source"], f"{location}.evidence_source", record["runtime_id"])
+    _validate_evidence_source(
+        record["evidence_source"],
+        f"{location}.evidence_source",
+        record["runtime_id"],
+        record["interface_kind"],
+    )
     _require_string(record["captured_at"], f"{location}.captured_at")
     if record["captured_at"] != UNKNOWN:
         try:
