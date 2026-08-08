@@ -186,7 +186,7 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
     if missing:
         raise _fail(location, f"missing required fields: {missing}")
 
-    if record["schema_version"] != SCHEMA_VERSION:
+    if type(record["schema_version"]) is not int or record["schema_version"] != SCHEMA_VERSION:
         raise _fail(location, f"schema_version must be {SCHEMA_VERSION}")
     _require_string(record["runtime_id"], f"{location}.runtime_id")
     _require_string(record["binary_path"], f"{location}.binary_path", allow_empty=True)
@@ -194,6 +194,7 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
     _require_string(record["interface_kind"], f"{location}.interface_kind")
     if record["interface_kind"] not in INTERFACE_KINDS:
         raise _fail(location, f"unsupported interface_kind: {record['interface_kind']}")
+    _require_string(record["multi_agent_generation"], f"{location}.multi_agent_generation")
     if record["multi_agent_generation"] not in GENERATION_VALUES:
         raise _fail(location, "invalid multi_agent_generation")
     _validate_string_list(record["exposed_agent_types"], f"{location}.exposed_agent_types")
@@ -250,7 +251,8 @@ def validate_document(document: Any) -> dict[str, Any]:
 
     if not isinstance(document, dict):
         raise RuntimeRecordError("document: must be an object")
-    if document.get("schema_version") != SCHEMA_VERSION:
+    schema_version = document.get("schema_version")
+    if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
         raise RuntimeRecordError(f"document.schema_version must be {SCHEMA_VERSION}")
     records = document.get("records")
     if not isinstance(records, list):
@@ -273,8 +275,11 @@ def validate_document(document: Any) -> dict[str, Any]:
             value = assertion.get("value")
         else:
             value = assertion
-        if name == "native_v2_luna" and value not in {"yes", "no", UNKNOWN}:
-            raise _fail(f"diagnostic_assertions.{name}", "must be yes, no, or unknown")
+        if name == "native_v2_luna":
+            value_location = f"diagnostic_assertions.{name}.value"
+            _require_string(value, value_location)
+            if value not in {"yes", "no", UNKNOWN}:
+                raise _fail(value_location, "must be yes, no, or unknown")
     return document
 
 

@@ -269,6 +269,18 @@ class RuntimeRecordTests(unittest.TestCase):
         self.assertNotEqual(query.returncode, 0)
         self.assertIn("absent/unknown", query.stderr)
 
+    def test_json_type_errors_fail_closed_without_tracebacks(self) -> None:
+        for fixture in (
+            "document-schema-bool.json",
+            "record-schema-float.json",
+            "generation-list.json",
+            "native-assertion-list.json",
+        ):
+            result = run_tool("validate", str(FIXTURE_ROOT / fixture))
+            self.assertEqual(result.returncode, 2, fixture)
+            self.assertIn("runtime-record error:", result.stderr, fixture)
+            self.assertNotIn("Traceback", result.stderr, fixture)
+
     def test_provenance_contract_rejects_disguised_composites(self) -> None:
         document = read_fixture("native-spawn.json")
         runtime_id = document["records"][0]["runtime_id"]

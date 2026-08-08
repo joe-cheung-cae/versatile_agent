@@ -1,0 +1,10 @@
+{
+  "diagnostic_assertions": {
+    "native_v2_luna": {
+      "diagnostic_only": true,
+      "value": []
+    }
+  },
+  "records": [],
+  "schema_version": 1
+}
