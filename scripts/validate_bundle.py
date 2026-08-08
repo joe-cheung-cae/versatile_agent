@@ -47,6 +47,7 @@ RUNTIME_RECORD_FIXTURES = {
     "native-request-only.json",
     "native-spawn.json",
     "native-assertion-list.json",
+    "native-assertion-primitive.json",
     "record-schema-float.json",
     "unknown-fact.json",
     "unknown-model-known-effort.json",

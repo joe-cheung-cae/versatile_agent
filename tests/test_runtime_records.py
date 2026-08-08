@@ -275,6 +275,7 @@ class RuntimeRecordTests(unittest.TestCase):
             "record-schema-float.json",
             "generation-list.json",
             "native-assertion-list.json",
+            "native-assertion-primitive.json",
         ):
             result = run_tool("validate", str(FIXTURE_ROOT / fixture))
             self.assertEqual(result.returncode, 2, fixture)

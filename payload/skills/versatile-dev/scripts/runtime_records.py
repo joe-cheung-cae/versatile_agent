@@ -269,12 +269,12 @@ def validate_document(document: Any) -> dict[str, Any]:
     if not isinstance(assertions, dict):
         raise RuntimeRecordError("document.diagnostic_assertions: must be an object")
     for name, assertion in assertions.items():
-        if isinstance(assertion, dict):
-            if assertion.get("diagnostic_only") is not True:
-                raise _fail(f"diagnostic_assertions.{name}", "must be diagnostic_only=true")
-            value = assertion.get("value")
-        else:
-            value = assertion
+        assertion_location = f"diagnostic_assertions.{name}"
+        if not isinstance(assertion, dict):
+            raise _fail(assertion_location, "must be an object with diagnostic_only=true")
+        if assertion.get("diagnostic_only") is not True:
+            raise _fail(assertion_location, "must be diagnostic_only=true")
+        value = assertion.get("value")
         if name == "native_v2_luna":
             value_location = f"diagnostic_assertions.{name}.value"
             _require_string(value, value_location)
