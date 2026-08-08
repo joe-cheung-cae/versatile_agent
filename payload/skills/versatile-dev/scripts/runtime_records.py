@@ -27,14 +27,19 @@ Required record fields:
 ``model_support`` / ``effort_support``
     Model slugs and a model-to-efforts mapping, or explicit ``unknown``.
 ``evidence_source``
-    A single-runtime provenance label; composite and cross-runtime labels are
-    rejected.
+    An object with ``kind``, ``runtime_id``, and ``scope``.  The kind must be
+    known, the runtime ID must equal this record ID, and scope must be
+    ``single-runtime``.
 ``captured_at`` / ``diagnostic_only``
     Capture timestamp and whether the record is diagnostic-only evidence.
 
 Optional native/App-task observations live inside that same record under
-``observed``.  The query operation always selects one ``runtime_id`` before
-checking facts, so it cannot assemble a route from complementary records.
+``observed``. Plain ``agent_type``/``model``/``effort`` values are requested or
+non-effective observations. Native effective queries require the exact
+``effective_agent_type``/``effective_model``/``effective_effort`` fields from a
+single ``native_spawn_attempt`` record. The query operation always selects one
+``runtime_id`` before checking facts, so it cannot assemble a route from
+complementary records.
 No routing state transitions are implemented here.
 """
 
@@ -78,6 +83,13 @@ INTERFACE_KINDS = {
 PROBE_KINDS = {"cli_binary", "app_bundled_cli"}
 GENERATION_VALUES = {"none", "v1", "v2", "unknown"}
 UNKNOWN = "unknown"
+EVIDENCE_SOURCE_KINDS = {
+    "detector_probe",
+    "fixture",
+    "native_spawn_details",
+    "app_task_details",
+}
+EVIDENCE_SOURCE_FIELDS = {"kind", "runtime_id", "scope"}
 OBSERVED_KEYS = {
     "agent_type",
     "model",
@@ -86,7 +98,6 @@ OBSERVED_KEYS = {
     "effective_model",
     "effective_effort",
 }
-MIXED_MARKERS = ("mixed", "composite", "cross-runtime", "cross_runtime")
 INTERFACE_ORDER = {
     "cli_binary": 0,
     "app_bundled_cli": 1,
@@ -123,26 +134,25 @@ def _validate_string_list(value: Any, location: str) -> None:
         raise _fail(location, "contains duplicate values")
 
 
-def _validate_evidence_source(value: Any, location: str) -> None:
-    if isinstance(value, str):
-        _require_string(value, location)
-        haystack = value.lower()
-    elif isinstance(value, dict):
-        if not value:
-            raise _fail(location, "must not be empty")
-        haystack = json.dumps(value, sort_keys=True).lower()
-        if "kind" in value:
-            _require_string(value["kind"], f"{location}.kind")
-        if "runtime_ids" in value:
-            ids = value["runtime_ids"]
-            if not isinstance(ids, list) or len(ids) != 1:
-                raise _fail(location, "must identify one runtime only")
-        if value.get("scope") == "cross-runtime":
-            raise _fail(location, "cross-runtime provenance is not allowed")
-    else:
-        raise _fail(location, "must be a string or object")
-    if any(marker in haystack for marker in MIXED_MARKERS):
-        raise _fail(location, "composite or mixed provenance is not allowed")
+def _validate_evidence_source(value: Any, location: str, runtime_id: str) -> None:
+    if not isinstance(value, dict):
+        raise _fail(location, "must be a strict single-runtime object")
+    if "runtime_ids" in value:
+        raise _fail(location, "must use exactly one runtime_id, not runtime_ids")
+    missing = EVIDENCE_SOURCE_FIELDS - set(value)
+    extra = set(value) - EVIDENCE_SOURCE_FIELDS
+    if missing:
+        raise _fail(location, f"missing required provenance fields: {sorted(missing)}")
+    if extra:
+        raise _fail(location, f"unsupported provenance fields: {sorted(extra)}")
+    _require_string(value["kind"], f"{location}.kind")
+    if value["kind"] not in EVIDENCE_SOURCE_KINDS:
+        raise _fail(location, "unsupported provenance kind: " + str(value["kind"]))
+    _require_string(value["runtime_id"], f"{location}.runtime_id")
+    if value["runtime_id"] != runtime_id:
+        raise _fail(location, "provenance runtime_id does not match record runtime_id")
+    if value["scope"] != "single-runtime":
+        raise _fail(location, "provenance scope must be single-runtime")
 
 
 def _validate_observed(record: dict[str, Any], location: str) -> None:
@@ -199,6 +209,11 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
     elif not isinstance(efforts, dict):
         raise _fail(f"{location}.effort_support", "must be an object or 'unknown'")
     else:
+        if record["model_support"] == UNKNOWN:
+            raise _fail(
+                f"{location}.effort_support",
+                "known effort support requires known model_support",
+            )
         for model, values in efforts.items():
             _require_string(model, f"{location}.effort_support key")
             _validate_string_list(values, f"{location}.effort_support[{model!r}]")
@@ -210,7 +225,7 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
                     f"contains models absent from model_support: {extra_models}",
                 )
 
-    _validate_evidence_source(record["evidence_source"], f"{location}.evidence_source")
+    _validate_evidence_source(record["evidence_source"], f"{location}.evidence_source", record["runtime_id"])
     _require_string(record["captured_at"], f"{location}.captured_at")
     if record["captured_at"] != UNKNOWN:
         try:
@@ -297,10 +312,6 @@ def load_document(path: str | Path) -> dict[str, Any]:
     return validate_document(document)
 
 
-def _fact_known(value: Any) -> bool:
-    return value != UNKNOWN and value != [] and value != {}
-
-
 def query_record(
     document: dict[str, Any],
     *,
@@ -310,9 +321,9 @@ def query_record(
     require_agent_types: Iterable[str] = (),
     require_models: Iterable[str] = (),
     require_efforts: Iterable[str] = (),
-    require_observed_agent_type: str | None = None,
-    require_observed_model: str | None = None,
-    require_observed_effort: str | None = None,
+    require_effective_agent_type: str | None = None,
+    require_effective_model: str | None = None,
+    require_effective_effort: str | None = None,
 ) -> dict[str, Any]:
     """Return facts from exactly one record, failing closed on ambiguity."""
 
@@ -350,28 +361,39 @@ def query_record(
         if supported == UNKNOWN or model not in supported:
             raise RuntimeRecordError(f"required model support is absent/unknown: {model}")
 
+    models = selected["model_support"]
     efforts = selected["effort_support"]
     for requirement in require_efforts:
         if ":" not in requirement:
             raise RuntimeRecordError(f"effort requirement must be MODEL:EFFORT: {requirement}")
         model, effort = requirement.split(":", 1)
+        if models == UNKNOWN or model not in models:
+            raise RuntimeRecordError(f"required model support is absent/unknown: {model}")
         if efforts == UNKNOWN or model not in efforts or efforts[model] == UNKNOWN or effort not in efforts[model]:
             raise RuntimeRecordError(f"required effort support is absent/unknown: {requirement}")
 
     observed = selected.get("observed", {})
     for key, required in (
-        ("agent_type", require_observed_agent_type),
-        ("model", require_observed_model),
-        ("effort", require_observed_effort),
+        ("agent_type", require_effective_agent_type),
+        ("model", require_effective_model),
+        ("effort", require_effective_effort),
     ):
         if required is None:
             continue
-        values = [observed.get(f"effective_{key}"), observed.get(key)]
-        known = next((value for value in values if value not in (None, UNKNOWN)), None)
-        if known is None:
-            raise RuntimeRecordError(f"required observed {key} is absent/unknown")
-        if known != required:
-            raise RuntimeRecordError(f"required observed {key} does not match selected record")
+        if selected["interface_kind"] != "native_spawn_attempt":
+            raise RuntimeRecordError(
+                "native effective "
+                + key
+                + " is unavailable for interface "
+                + selected["interface_kind"]
+                + "; STOP_UNVERIFIED"
+            )
+        field = f"effective_{key}"
+        actual = observed.get(field)
+        if actual in (None, "", UNKNOWN):
+            raise RuntimeRecordError(f"required native effective {field} is absent/unknown; STOP_UNVERIFIED")
+        if actual != required:
+            raise RuntimeRecordError(f"required native effective {field} does not match selected record")
 
     return {
         "schema_version": SCHEMA_VERSION,
@@ -470,9 +492,10 @@ def _probe_record(interface_kind: str, binary_path: str, captured_at: str) -> di
     version = version_lines[-1] if version_lines else UNKNOWN
     features = _parse_features(_run_probe(binary_path, "features", "list"))
     model_support, effort_support = _parse_models(_run_probe(binary_path, "debug", "models", "--bundled"))
+    runtime_id = _runtime_id(interface_kind, binary_path, version)
     return {
         "schema_version": SCHEMA_VERSION,
-        "runtime_id": _runtime_id(interface_kind, binary_path, version),
+        "runtime_id": runtime_id,
         "binary_path": binary_path,
         "version": version,
         "interface_kind": interface_kind,
@@ -480,7 +503,11 @@ def _probe_record(interface_kind: str, binary_path: str, captured_at: str) -> di
         "exposed_agent_types": [],
         "model_support": model_support,
         "effort_support": effort_support,
-        "evidence_source": f"detector:{interface_kind}",
+        "evidence_source": {
+            "kind": "detector_probe",
+            "runtime_id": runtime_id,
+            "scope": "single-runtime",
+        },
         "captured_at": captured_at,
         "diagnostic_only": True,
     }
@@ -500,7 +527,10 @@ def detect_document(codex_bin: str, app_codex_bin: str, native_v2_luna: str) -> 
         "diagnostic_assertions": {
             "native_v2_luna": {
                 "value": native_v2_luna,
-                "evidence_source": "argument:--native-v2-luna",
+                "evidence_source": {
+                    "kind": "argument_assertion",
+                    "scope": "diagnostic-only",
+                },
                 "diagnostic_only": True,
             }
         },
@@ -520,19 +550,31 @@ def _supports(record: dict[str, Any], model: str, effort: str) -> bool:
     )
 
 
-def recommend_profile(records: list[dict[str, Any]], native_v2_luna: str) -> tuple[str, str, str]:
-    """Return a legacy diagnostic profile from one record, never a merged route."""
+def recommend_profile(records: list[dict[str, Any]]) -> tuple[str, str, str]:
+    """Return a diagnostic profile from one probe record, ignoring assertions."""
 
     ordered = sorted(records, key=lambda item: (INTERFACE_ORDER[item["interface_kind"]], item["runtime_id"]))
     for record in ordered:
-        if record["multi_agent_generation"] == "v2" and native_v2_luna == "yes" and _supports(record, "gpt-5.6-luna", "max"):
+        if (
+            record["interface_kind"] in PROBE_KINDS
+            and record["diagnostic_only"]
+            and record["multi_agent_generation"] == "v2"
+            and isinstance(record["exposed_agent_types"], list)
+            and bool(record["exposed_agent_types"])
+            and _supports(record, "gpt-5.6-luna", "max")
+        ):
             return (
                 "luna-v2",
                 record["runtime_id"],
-                "Diagnostic only: one V2 runtime record contains Luna/Max capability and the explicit V2 assertion.",
+                "Diagnostic only: one V2 probe record independently contains native exposure and Luna/Max capability; native effective routing is unverified.",
             )
     for record in ordered:
-        if record["multi_agent_generation"] == "v1" and _supports(record, "gpt-5.6-luna", "max"):
+        if (
+            record["interface_kind"] in PROBE_KINDS
+            and record["diagnostic_only"]
+            and record["multi_agent_generation"] == "v1"
+            and _supports(record, "gpt-5.6-luna", "max")
+        ):
             return (
                 "luna-v1",
                 record["runtime_id"],
@@ -541,7 +583,7 @@ def recommend_profile(records: list[dict[str, Any]], native_v2_luna: str) -> tup
     return (
         "terra-fallback",
         "",
-        "Diagnostic only: no single runtime record contains a compatible generation, model, and effort; fail closed.",
+        "Diagnostic only: no single probe record independently verifies native exposure and required capability; fail closed.",
     )
 
 
@@ -577,7 +619,7 @@ def env_output(document: dict[str, Any], native_v2_luna: str) -> str:
     records = {record["interface_kind"]: record for record in document["records"]}
     cli = _legacy_projection(records["cli_binary"])
     app = _legacy_projection(records["app_bundled_cli"])
-    profile, runtime_id, reason = recommend_profile(document["records"], native_v2_luna)
+    profile, runtime_id, reason = recommend_profile(document["records"])
     lines = [
         _shell_assignment("RUNTIME_RECORD_SCHEMA_VERSION", str(SCHEMA_VERSION)),
         _shell_assignment("RUNTIME_RECORDS_JSON", json.dumps(_ordered_document(document), sort_keys=True, separators=(",", ":"))),
@@ -631,9 +673,24 @@ def _build_parser() -> argparse.ArgumentParser:
     query.add_argument("--require-agent-type", action="append", default=[])
     query.add_argument("--require-model", action="append", default=[])
     query.add_argument("--require-effort", action="append", default=[])
-    query.add_argument("--require-observed-agent-type")
-    query.add_argument("--require-observed-model")
-    query.add_argument("--require-observed-effort")
+    query.add_argument(
+        "--require-effective-agent-type",
+        "--require-observed-agent-type",
+        dest="require_effective_agent_type",
+        help="require exact native effective_agent_type metadata",
+    )
+    query.add_argument(
+        "--require-effective-model",
+        "--require-observed-model",
+        dest="require_effective_model",
+        help="require exact native effective_model metadata",
+    )
+    query.add_argument(
+        "--require-effective-effort",
+        "--require-observed-effort",
+        dest="require_effective_effort",
+        help="require exact native effective_effort metadata",
+    )
     return parser
 
 
@@ -650,7 +707,7 @@ def main(argv: list[str] | None = None) -> int:
             elif args.format == "env":
                 sys.stdout.write(env_output(document, native_v2_luna))
             else:
-                sys.stdout.write(recommend_profile(document["records"], native_v2_luna)[0] + "\n")
+                sys.stdout.write(recommend_profile(document["records"])[0] + "\n")
             return 0
         if args.command == "validate":
             document = load_document(args.path)
@@ -665,9 +722,9 @@ def main(argv: list[str] | None = None) -> int:
             require_agent_types=args.require_agent_type,
             require_models=args.require_model,
             require_efforts=args.require_effort,
-            require_observed_agent_type=args.require_observed_agent_type,
-            require_observed_model=args.require_observed_model,
-            require_observed_effort=args.require_observed_effort,
+            require_effective_agent_type=args.require_effective_agent_type,
+            require_effective_model=args.require_effective_model,
+            require_effective_effort=args.require_effective_effort,
         )
         sys.stdout.write(json.dumps(result, indent=2, sort_keys=True) + "\n")
         return 0

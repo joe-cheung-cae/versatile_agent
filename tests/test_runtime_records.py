@@ -119,7 +119,7 @@ class RuntimeRecordTests(unittest.TestCase):
 
     def test_mixed_runtime_query_and_compatibility_recommendation_fail_closed(self) -> None:
         document = read_fixture("cli-and-app-records.json")
-        recommendation = MODULE.recommend_profile(document["records"], "yes")
+        recommendation = MODULE.recommend_profile(document["records"])
         self.assertEqual(recommendation[0], "terra-fallback")
         self.assertIn("fail closed", recommendation[2])
         with self.assertRaises(MODULE.RuntimeRecordError):
@@ -154,21 +154,49 @@ class RuntimeRecordTests(unittest.TestCase):
     def test_native_spawn_and_app_task_are_valid_only_as_separate_records(self) -> None:
         native = read_fixture("native-spawn.json")
         app_task = read_fixture("app-task.json")
-        for document, interface_kind in ((native, "native_spawn_attempt"), (app_task, "app_task")):
-            MODULE.validate_document(document)
-            record = document["records"][0]
-            self.assertEqual(record["interface_kind"], interface_kind)
-            result = MODULE.query_record(
-                document,
-                runtime_id=record["runtime_id"],
-                require_observed_model="gpt-5.6-luna",
-                require_observed_effort="max",
+        MODULE.validate_document(native)
+        native_record = native["records"][0]
+        self.assertEqual(native_record["interface_kind"], "native_spawn_attempt")
+        result = MODULE.query_record(
+            native,
+           runtime_id=native_record["runtime_id"],
+            require_effective_agent_type="docs_researcher_luna",
+           require_effective_model="gpt-5.6-luna",
+           require_effective_effort="max",
+        )
+        self.assertEqual(result["runtime_id"], native_record["runtime_id"])
+
+        MODULE.validate_document(app_task)
+        app_record = app_task["records"][0]
+        self.assertEqual(app_record["interface_kind"], "app_task")
+        with self.assertRaises(MODULE.RuntimeRecordError):
+            MODULE.query_record(
+                app_task,
+                runtime_id=app_record["runtime_id"],
+                require_effective_model="gpt-5.6-luna",
             )
-            self.assertEqual(result["runtime_id"], record["runtime_id"])
         self.assertFalse(any(key.startswith("effective_") for key in app_task["records"][0]["observed"]))
         combined = {"schema_version": 1, "records": native["records"] + app_task["records"]}
         with self.assertRaises(MODULE.RuntimeRecordError):
-            MODULE.query_record(combined, require_observed_model="gpt-5.6-luna")
+            MODULE.query_record(combined, require_effective_model="gpt-5.6-luna")
+
+    def test_missing_or_unknown_native_effective_metadata_fails_closed(self) -> None:
+        for fixture, runtime_id in (
+            ("native-request-only.json", "fixture-native-request-only"),
+            ("native-effective-unknown.json", "fixture-native-effective-unknown"),
+        ):
+            result = run_tool(
+                "query",
+                str(FIXTURE_ROOT / fixture),
+                "--runtime-id",
+                runtime_id,
+                "--require-effective-model",
+                "gpt-5.6-luna",
+                "--require-effective-effort",
+                "max",
+            )
+            self.assertNotEqual(result.returncode, 0, fixture)
+            self.assertIn("STOP_UNVERIFIED", result.stderr, fixture)
 
         detector = json.loads(
             run_detector(
@@ -191,6 +219,9 @@ class RuntimeRecordTests(unittest.TestCase):
             "duplicate-runtime-id.json",
             "mixed-evidence.json",
             "conflicting-observation.json",
+            "mismatched-provenance.json",
+            "disguised-composite.json",
+            "unknown-model-known-effort.json",
         ):
             result = run_tool("validate", str(FIXTURE_ROOT / fixture))
             self.assertNotEqual(result.returncode, 0, fixture)
@@ -210,6 +241,19 @@ class RuntimeRecordTests(unittest.TestCase):
         )
         self.assertNotEqual(query.returncode, 0)
         self.assertIn("absent/unknown", query.stderr)
+
+    def test_provenance_contract_rejects_disguised_composites(self) -> None:
+        document = read_fixture("native-spawn.json")
+        runtime_id = document["records"][0]["runtime_id"]
+        for source in (
+            {"kind": "fixture", "runtime_ids": [runtime_id], "scope": "single-runtime"},
+            {"kind": "fixture", "runtime_id": runtime_id, "scope": "cross-runtime"},
+            {"kind": "fixture", "scope": "single-runtime"},
+        ):
+            mutated = copy.deepcopy(document)
+            mutated["records"][0]["evidence_source"] = source
+            with self.assertRaises(MODULE.RuntimeRecordError):
+                MODULE.validate_document(mutated)
 
     def test_serialization_is_deterministic_and_ordered(self) -> None:
         document = read_fixture("cli-and-app-records.json")
@@ -252,7 +296,15 @@ class RuntimeRecordTests(unittest.TestCase):
         self.assertIn("RECOMMENDED_PROFILE_DIAGNOSTIC_ONLY=true", env.stdout)
         self.assertIn("ROUTE_REASON='Diagnostic", env.stdout)
 
-        v2 = run_detector(
+        v2_unknown = run_detector(
+            "--format",
+            "profile",
+            "--codex-bin",
+            str(FIXTURE_ROOT / "cli-v2-luna.sh"),
+            "--app-codex-bin",
+            str(FIXTURE_ROOT / "missing-app"),
+        )
+        v2_yes = run_detector(
             "--format",
             "profile",
             "--codex-bin",
@@ -262,8 +314,10 @@ class RuntimeRecordTests(unittest.TestCase):
             "--native-v2-luna",
             "yes",
         )
-        self.assertEqual(v2.returncode, 0, v2.stderr)
-        self.assertEqual(v2.stdout.strip(), "luna-v2")
+        self.assertEqual(v2_unknown.returncode, 0, v2_unknown.stderr)
+        self.assertEqual(v2_yes.returncode, 0, v2_yes.stderr)
+        self.assertEqual(v2_unknown.stdout.strip(), "terra-fallback")
+        self.assertEqual(v2_yes.stdout.strip(), v2_unknown.stdout.strip())
 
 
 if __name__ == "__main__":

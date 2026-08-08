@@ -539,6 +539,6 @@ mkdir -p "$project_auto_v2_luna"
   --app-codex-bin "$test_root/missing-app-codex" \
   --native-v2-luna yes >/dev/null
 assert_dual_researcher_bundle "$project_auto_v2_luna/.codex/agents"
-assert_contains "$project_auto_v2_luna/.codex/versatile-agent/install-manifest.json" '"selected_profile": "luna-v2"'
+assert_contains "$project_auto_v2_luna/.codex/versatile-agent/install-manifest.json" '"selected_profile": "terra-fallback"'
 
 printf 'Installer matrix passed: project/user, historical migration, conflict fail-closed, all profiles, 13 unique dual-researcher agents, merge, backup, check, dry-run, and idempotency.\n'

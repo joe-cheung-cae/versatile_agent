@@ -9,19 +9,22 @@
       },
       "evidence_source": {
         "kind": "fixture",
-        "runtime_id": "fixture-app-task-luna",
+        "runtime_id": "fixture-native-effective-unknown",
         "scope": "single-runtime"
       },
-      "exposed_agent_types": [],
-      "interface_kind": "app_task",
+      "exposed_agent_types": ["docs_researcher_luna"],
+      "interface_kind": "native_spawn_attempt",
       "model_support": ["gpt-5.6-luna"],
-      "multi_agent_generation": "unknown",
+      "multi_agent_generation": "v2",
       "observed": {
-        "agent_type": "user_visible_app_task",
+        "agent_type": "docs_researcher_luna",
         "effort": "max",
-        "model": "gpt-5.6-luna"
+        "model": "gpt-5.6-luna",
+        "effective_agent_type": "unknown",
+        "effective_effort": "unknown",
+        "effective_model": "unknown"
       },
-      "runtime_id": "fixture-app-task-luna",
+      "runtime_id": "fixture-native-effective-unknown",
       "schema_version": 1,
       "version": "unknown"
     }

@@ -1,21 +1,22 @@
 {
   "records": [
     {
-      "binary_path": "/fixtures/codex-cli",
+      "binary_path": "",
       "captured_at": "2026-08-08T00:00:00Z",
-      "diagnostic_only": true,
+      "diagnostic_only": false,
+      "effort_support": {},
       "evidence_source": {
         "kind": "fixture",
-        "runtime_id": "fixture-missing-effort",
+        "runtime_id": "fixture-other-runtime",
         "scope": "single-runtime"
       },
       "exposed_agent_types": [],
-      "interface_kind": "cli_binary",
+      "interface_kind": "native_spawn_attempt",
       "model_support": [],
       "multi_agent_generation": "none",
-      "runtime_id": "fixture-missing-effort",
+      "runtime_id": "fixture-mismatched-provenance",
       "schema_version": 1,
-      "version": "fixture"
+      "version": "unknown"
     }
   ],
   "schema_version": 1

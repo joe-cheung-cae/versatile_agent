@@ -5,7 +5,11 @@
       "captured_at": "2026-08-08T00:00:00Z",
       "diagnostic_only": false,
       "effort_support": "unknown",
-      "evidence_source": "fixture:native_spawn_attempt",
+      "evidence_source": {
+        "kind": "fixture",
+        "runtime_id": "fixture-unknown-facts",
+        "scope": "single-runtime"
+      },
       "exposed_agent_types": "unknown",
       "interface_kind": "native_spawn_attempt",
       "model_support": "unknown",

@@ -2,7 +2,10 @@
   "diagnostic_assertions": {
     "native_v2_luna": {
       "diagnostic_only": true,
-      "evidence_source": "fixture:argument",
+      "evidence_source": {
+        "kind": "argument_assertion",
+        "scope": "diagnostic-only"
+      },
       "value": "yes"
     }
   },
@@ -14,7 +17,11 @@
       "effort_support": {
         "gpt-5.6-terra": ["high"]
       },
-      "evidence_source": "fixture:cli_binary",
+      "evidence_source": {
+        "kind": "fixture",
+        "runtime_id": "fixture-cli-v2",
+        "scope": "single-runtime"
+      },
       "exposed_agent_types": [],
       "interface_kind": "cli_binary",
       "model_support": ["gpt-5.6-terra"],
@@ -30,7 +37,11 @@
       "effort_support": {
         "gpt-5.6-luna": ["max"]
       },
-      "evidence_source": "fixture:app_bundled_cli",
+      "evidence_source": {
+        "kind": "fixture",
+        "runtime_id": "fixture-app-luna-only",
+        "scope": "single-runtime"
+      },
       "exposed_agent_types": [],
       "interface_kind": "app_bundled_cli",
       "model_support": ["gpt-5.6-luna"],

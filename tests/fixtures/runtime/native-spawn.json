@@ -7,7 +7,11 @@
       "effort_support": {
         "gpt-5.6-luna": ["max"]
       },
-      "evidence_source": "fixture:native_spawn_attempt",
+      "evidence_source": {
+        "kind": "fixture",
+        "runtime_id": "fixture-native-luna-attempt",
+        "scope": "single-runtime"
+      },
       "exposed_agent_types": ["docs_researcher_luna", "docs_researcher_terra"],
       "interface_kind": "native_spawn_attempt",
       "model_support": ["gpt-5.6-luna"],
@@ -15,7 +19,10 @@
       "observed": {
         "agent_type": "docs_researcher_luna",
         "effort": "max",
-        "model": "gpt-5.6-luna"
+        "model": "gpt-5.6-luna",
+        "effective_agent_type": "docs_researcher_luna",
+        "effective_effort": "max",
+        "effective_model": "gpt-5.6-luna"
       },
       "runtime_id": "fixture-native-luna-attempt",
       "schema_version": 1,

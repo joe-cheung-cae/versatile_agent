@@ -5,7 +5,11 @@
       "captured_at": "2026-08-08T00:00:00Z",
       "diagnostic_only": true,
       "effort_support": {},
-      "evidence_source": "fixture:cli_binary",
+      "evidence_source": {
+        "kind": "fixture",
+        "runtime_id": "fixture-duplicate",
+        "scope": "single-runtime"
+      },
       "exposed_agent_types": [],
       "interface_kind": "cli_binary",
       "model_support": [],
@@ -19,7 +23,11 @@
       "captured_at": "2026-08-08T00:00:00Z",
       "diagnostic_only": true,
       "effort_support": {},
-      "evidence_source": "fixture:app_bundled_cli",
+      "evidence_source": {
+        "kind": "fixture",
+        "runtime_id": "fixture-duplicate",
+        "scope": "single-runtime"
+      },
       "exposed_agent_types": [],
       "interface_kind": "app_bundled_cli",
       "model_support": [],
