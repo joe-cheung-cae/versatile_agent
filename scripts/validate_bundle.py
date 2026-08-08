@@ -91,6 +91,12 @@ def validate_skill(root: Path, check: Validation) -> None:
 
 
 def validate_agents(root: Path, check: Validation) -> None:
+    for obsolete in (
+        root / "payload/agents/profiles/luna-v1/docs_researcher.toml",
+        root / "payload/agents/profiles/terra-fallback/docs_researcher.toml",
+    ):
+        check.require(not obsolete.exists() and not obsolete.is_symlink(), f"obsolete profile payload must be absent: {obsolete}")
+
     common_dir = root / "payload/agents/common"
     common_paths = sorted(common_dir.glob("*.toml"))
     common_data = {path.name: parse_agent(path, check) for path in common_paths}

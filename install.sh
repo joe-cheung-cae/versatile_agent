@@ -178,6 +178,55 @@ else
   backup_base="$codex_home"
 fi
 
+legacy_destination="$agent_destination/docs_researcher.toml"
+historical_luna_sha256="a57cba3c55a1a6abb4340b554a732923743f47b651f82984b8b3f246d824e730"
+historical_terra_sha256="a69031a325e3ecf920ab1df09d7cf074c4fe97d301e20c9b27ffb04216bb983b"
+
+classify_legacy_destination() {
+  python3 - "$legacy_destination" "$historical_luna_sha256" "$historical_terra_sha256" <<'PY'
+import hashlib
+import os
+import stat
+import sys
+
+path, *historical_hashes = sys.argv[1:]
+try:
+    metadata = os.lstat(path)
+except FileNotFoundError:
+    print("ABSENT")
+    raise SystemExit(0)
+except OSError:
+    print("CONFLICT")
+    raise SystemExit(0)
+
+if not stat.S_ISREG(metadata.st_mode):
+    print("CONFLICT")
+    raise SystemExit(0)
+
+fd = -1
+try:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(path, flags)
+    opened = os.fstat(fd)
+    if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+        print("CONFLICT")
+        raise SystemExit(0)
+    digest = hashlib.sha256()
+    with os.fdopen(fd, "rb", closefd=True) as stream:
+        fd = -1
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+except OSError:
+    print("CONFLICT")
+    raise SystemExit(0)
+finally:
+    if fd >= 0:
+        os.close(fd)
+
+print("KNOWN_HISTORICAL" if digest.hexdigest() in historical_hashes else "CONFLICT")
+PY
+}
+
 case "$skill_destination" in
   */.agents/skills/versatile-dev|*/skills/versatile-dev) ;;
   *) printf 'Refusing unsafe skill destination: %s\n' "$skill_destination" >&2; exit 2 ;;
@@ -190,6 +239,26 @@ case "$agent_destination" in
   */agents|*/agents/) ;;
   *) printf 'Refusing unsafe agent destination: %s\n' "$agent_destination" >&2; exit 2 ;;
 esac
+
+legacy_state="$(classify_legacy_destination)"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_destination="$backup_base/.codex-versatile-backup-$timestamp-$$"
+backup_created="false"
+
+legacy_conflict() {
+  printf 'Legacy agent path conflict: %s\n' "$legacy_destination" >&2
+  printf 'The path is not an absent file or a recognized historical payload. Preserve it unchanged, resolve the conflict manually, and rerun installation.\n' >&2
+}
+
+if [[ "$legacy_state" == "CONFLICT" ]]; then
+  legacy_conflict
+  exit 1
+fi
+
+if [[ "$check_only" == "true" && "$legacy_state" == "KNOWN_HISTORICAL" ]]; then
+  printf 'Legacy migration pending: %s is a recognized historical file; run a normal install to back it up and remove it.\n' "$legacy_destination" >&2
+  exit 1
+fi
 
 if [[ "$check_only" == "true" ]]; then
   status=0
@@ -230,6 +299,10 @@ raise SystemExit(0 if data.get("selected_profile") == profile and data.get("bund
 fi
 
 if [[ "$dry_run" == "true" ]]; then
+  if [[ "$legacy_state" == "KNOWN_HISTORICAL" ]]; then
+    printf 'Would back up legacy file: %s -> %s\n' "$legacy_destination" "$backup_destination/agents/docs_researcher.toml"
+    printf 'Would remove legacy file: %s\n' "$legacy_destination"
+  fi
   printf 'Would install skill: %s\n' "$skill_destination"
   printf 'Would install %s agents: %s\n' "$common_agent_count" "$agent_destination"
   [[ "$manage_config" == "true" ]] && printf 'Would merge [agents] settings: %s\n' "$config_destination"
@@ -237,10 +310,6 @@ if [[ "$dry_run" == "true" ]]; then
   printf 'Selected profile: %s\n' "$profile"
   exit 0
 fi
-
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-backup_destination="$backup_base/.codex-versatile-backup-$timestamp-$$"
-backup_created="false"
 
 ensure_backup_root() {
   if [[ "$backup_created" == "false" ]]; then
@@ -258,6 +327,20 @@ backup_path() {
     cp -Rp "$source_path" "$backup_destination/$relative_name"
   fi
 }
+
+if [[ "$legacy_state" == "KNOWN_HISTORICAL" ]]; then
+  legacy_backup_path="$backup_destination/agents/docs_researcher.toml"
+  backup_path "$legacy_destination" "agents/docs_researcher.toml"
+  if [[ ! -f "$legacy_backup_path" || -L "$legacy_backup_path" ]] || ! cmp -s "$legacy_destination" "$legacy_backup_path"; then
+    printf 'Legacy migration backup verification failed; preserving %s.\n' "$legacy_destination" >&2
+    exit 1
+  fi
+  rm -f "$legacy_destination"
+  if [[ -e "$legacy_destination" || -L "$legacy_destination" ]]; then
+    printf 'Legacy migration removal failed; preserving %s.\n' "$legacy_destination" >&2
+    exit 1
+  fi
+fi
 
 if [[ ! -d "$skill_destination" ]] || ! diff -qr "$skill_source" "$skill_destination" >/dev/null 2>&1; then
   backup_path "$skill_destination" "skill/versatile-dev"
