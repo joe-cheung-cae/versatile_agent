@@ -1,0 +1,338 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+bundle_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+payload_root="$bundle_root/payload"
+skill_source="$payload_root/skills/versatile-dev"
+common_agents_source="$payload_root/agents/common"
+detector="$skill_source/scripts/detect-runtime.sh"
+merge_config="$bundle_root/scripts/merge_config.py"
+ensure_snippet="$bundle_root/scripts/ensure_snippet.py"
+write_manifest="$bundle_root/scripts/write_manifest.py"
+version="$(tr -d '[:space:]' < "$bundle_root/VERSION")"
+
+scope="project"
+target_path=""
+profile="auto"
+check_only="false"
+dry_run="false"
+with_agents_snippet="false"
+manage_config="true"
+user_home="${HOME:?HOME is required}"
+codex_home_override=""
+codex_binary="${CODEX_BIN:-}"
+app_codex_binary="${APP_CODEX_BIN:-/Applications/ChatGPT.app/Contents/Resources/codex}"
+native_v2_luna="${VERSATILE_NATIVE_V2_LUNA:-unknown}"
+
+usage() {
+  cat <<'EOF'
+Usage: ./install.sh [options]
+
+Scopes:
+  --scope project|user|global   Install into a repository or user locations.
+  --target PATH                 Project directory for project scope.
+  --user-home PATH              Override the user home for isolated installs/tests.
+  --codex-home PATH             Override Codex home for user/global scope.
+
+Routing:
+  --profile auto|luna-v1|luna-v2|terra-fallback
+  --codex-bin PATH
+  --app-codex-bin PATH
+  --native-v2-luna yes|no|unknown
+
+Behavior:
+  --with-agents-snippet         Append an idempotent AGENTS.md activation note.
+  --no-config                   Do not merge managed [agents] settings.
+  --check                       Verify an existing installation without writing.
+  --dry-run                     Print intended changes without writing.
+  -h, --help
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --scope)
+      scope="${2:-}"
+      shift 2
+      ;;
+    --target|--repo)
+      target_path="${2:-}"
+      shift 2
+      ;;
+    --profile)
+      profile="${2:-}"
+      shift 2
+      ;;
+    --user-home)
+      user_home="${2:-}"
+      shift 2
+      ;;
+    --codex-home)
+      codex_home_override="${2:-}"
+      shift 2
+      ;;
+    --codex-bin)
+      codex_binary="${2:-}"
+      shift 2
+      ;;
+    --app-codex-bin)
+      app_codex_binary="${2:-}"
+      shift 2
+      ;;
+    --native-v2-luna)
+      native_v2_luna="${2:-}"
+      shift 2
+      ;;
+    --with-agents-snippet)
+      with_agents_snippet="true"
+      shift
+      ;;
+    --no-config)
+      manage_config="false"
+      shift
+      ;;
+    --check)
+      check_only="true"
+      shift
+      ;;
+    --dry-run)
+      dry_run="true"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'Unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+[[ -d "$skill_source" ]] || { printf 'Missing skill payload: %s\n' "$skill_source" >&2; exit 2; }
+[[ -d "$common_agents_source" ]] || { printf 'Missing agent payload: %s\n' "$common_agents_source" >&2; exit 2; }
+command -v python3 >/dev/null 2>&1 || { printf 'python3 is required for safe TOML merge and validation.\n' >&2; exit 2; }
+python3 -c 'import tomllib' >/dev/null 2>&1 || { printf 'Python 3.11 or newer is required (tomllib is unavailable).\n' >&2; exit 2; }
+
+case "$scope" in
+  global) scope="user" ;;
+  project|user) ;;
+  *) printf 'Unsupported scope: %s\n' "$scope" >&2; exit 2 ;;
+esac
+
+case "$profile" in
+  auto|luna-v1|luna-v2|terra-fallback) ;;
+  *) printf 'Unsupported profile: %s\n' "$profile" >&2; exit 2 ;;
+esac
+
+case "$native_v2_luna" in
+  yes|no|unknown) ;;
+  *) printf 'Unsupported --native-v2-luna value: %s\n' "$native_v2_luna" >&2; exit 2 ;;
+esac
+
+probe_dir="$(mktemp -d "${TMPDIR:-/tmp}/versatile-agent-probe.XXXXXX")"
+trap 'rm -rf "$probe_dir"' EXIT
+probe_file="$probe_dir/runtime.json"
+
+detector_args=(--format json --app-codex-bin "$app_codex_binary" --native-v2-luna "$native_v2_luna")
+profile_args=(--format profile --app-codex-bin "$app_codex_binary" --native-v2-luna "$native_v2_luna")
+if [[ -n "$codex_binary" ]]; then
+  detector_args+=(--codex-bin "$codex_binary")
+  profile_args+=(--codex-bin "$codex_binary")
+fi
+
+"$detector" "${detector_args[@]}" > "$probe_file"
+if [[ "$profile" == "auto" ]]; then
+  profile="$($detector "${profile_args[@]}")"
+fi
+
+case "$profile" in
+  luna-v1|luna-v2)
+    profile_source="$payload_root/agents/profiles/luna-v1"
+    ;;
+  terra-fallback)
+    profile_source="$payload_root/agents/profiles/terra-fallback"
+    ;;
+esac
+[[ -f "$profile_source/docs_researcher.toml" ]] || { printf 'Missing profile payload: %s\n' "$profile_source" >&2; exit 2; }
+
+if [[ "$scope" == "project" ]]; then
+  [[ -n "$target_path" ]] || target_path="$PWD"
+  [[ -d "$target_path" ]] || { printf 'Project target does not exist: %s\n' "$target_path" >&2; exit 2; }
+  target_path="$(cd "$target_path" && pwd -P)"
+  skill_destination="$target_path/.agents/skills/versatile-dev"
+  agent_destination="$target_path/.codex/agents"
+  config_destination="$target_path/.codex/config.toml"
+  manifest_destination="$target_path/.codex/versatile-agent/install-manifest.json"
+  agents_md_destination="$target_path/AGENTS.md"
+  backup_base="$target_path"
+else
+  user_home="$(cd "$user_home" && pwd -P)"
+  codex_home="${codex_home_override:-${CODEX_HOME:-$user_home/.codex}}"
+  skill_destination="$user_home/.agents/skills/versatile-dev"
+  agent_destination="$codex_home/agents"
+  config_destination="$codex_home/config.toml"
+  manifest_destination="$codex_home/versatile-agent/install-manifest.json"
+  agents_md_destination="$codex_home/AGENTS.md"
+  backup_base="$codex_home"
+fi
+
+case "$skill_destination" in
+  */.agents/skills/versatile-dev|*/skills/versatile-dev) ;;
+  *) printf 'Refusing unsafe skill destination: %s\n' "$skill_destination" >&2; exit 2 ;;
+esac
+case "$agent_destination" in
+  /agents|agents|/)
+    printf 'Refusing unsafe agent destination: %s\n' "$agent_destination" >&2
+    exit 2
+    ;;
+  */agents|*/agents/) ;;
+  *) printf 'Refusing unsafe agent destination: %s\n' "$agent_destination" >&2; exit 2 ;;
+esac
+
+if [[ "$check_only" == "true" ]]; then
+  status=0
+  if ! diff -qr "$skill_source" "$skill_destination" >/dev/null 2>&1; then
+    printf 'Skill installation is missing or stale: %s\n' "$skill_destination" >&2
+    status=1
+  fi
+  for source_file in "$common_agents_source"/*.toml; do
+    destination_file="$agent_destination/$(basename "$source_file")"
+    if ! cmp -s "$source_file" "$destination_file"; then
+      printf 'Agent installation is missing or stale: %s\n' "$destination_file" >&2
+      status=1
+    fi
+  done
+  if ! cmp -s "$profile_source/docs_researcher.toml" "$agent_destination/docs_researcher.toml"; then
+    printf 'Routing profile is missing or stale: %s\n' "$agent_destination/docs_researcher.toml" >&2
+    status=1
+  fi
+  if [[ "$manage_config" == "true" ]] && ! python3 "$merge_config" --check "$config_destination"; then
+    status=1
+  fi
+  if [[ "$with_agents_snippet" == "true" ]] && ! python3 "$ensure_snippet" --check "$agents_md_destination" "$payload_root/AGENTS.md.snippet"; then
+    printf 'AGENTS.md activation snippet is missing: %s\n' "$agents_md_destination" >&2
+    status=1
+  fi
+  if ! python3 -c '
+import json, sys
+path, profile, version = sys.argv[1:]
+try:
+    data = json.load(open(path, encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+raise SystemExit(0 if data.get("selected_profile") == profile and data.get("bundle_version") == version else 1)
+' "$manifest_destination" "$profile" "$version"; then
+    printf 'Install manifest is missing or does not match profile %s: %s\n' "$profile" "$manifest_destination" >&2
+    status=1
+  fi
+  if [[ "$status" -eq 0 ]]; then
+    printf 'Installation check passed: scope=%s profile=%s\n' "$scope" "$profile"
+  fi
+  exit "$status"
+fi
+
+if [[ "$dry_run" == "true" ]]; then
+  printf 'Would install skill: %s\n' "$skill_destination"
+  printf 'Would install 12 agents: %s\n' "$agent_destination"
+  [[ "$manage_config" == "true" ]] && printf 'Would merge [agents] settings: %s\n' "$config_destination"
+  [[ "$with_agents_snippet" == "true" ]] && printf 'Would ensure AGENTS.md snippet: %s\n' "$agents_md_destination"
+  printf 'Selected profile: %s\n' "$profile"
+  exit 0
+fi
+
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+backup_destination="$backup_base/.codex-versatile-backup-$timestamp-$$"
+backup_created="false"
+
+ensure_backup_root() {
+  if [[ "$backup_created" == "false" ]]; then
+    mkdir -p "$backup_destination"
+    backup_created="true"
+  fi
+}
+
+backup_path() {
+  local source_path="$1"
+  local relative_name="$2"
+  if [[ -e "$source_path" || -L "$source_path" ]]; then
+    ensure_backup_root
+    mkdir -p "$backup_destination/$(dirname "$relative_name")"
+    cp -Rp "$source_path" "$backup_destination/$relative_name"
+  fi
+}
+
+if [[ ! -d "$skill_destination" ]] || ! diff -qr "$skill_source" "$skill_destination" >/dev/null 2>&1; then
+  backup_path "$skill_destination" "skill/versatile-dev"
+  mkdir -p "$(dirname "$skill_destination")"
+  rm -rf "$skill_destination"
+  cp -Rp "$skill_source" "$skill_destination"
+fi
+
+mkdir -p "$agent_destination"
+for source_file in "$common_agents_source"/*.toml; do
+  filename="$(basename "$source_file")"
+  destination_file="$agent_destination/$filename"
+  if ! cmp -s "$source_file" "$destination_file"; then
+    backup_path "$destination_file" "agents/$filename"
+    install -m 0644 "$source_file" "$destination_file"
+  fi
+done
+
+docs_destination="$agent_destination/docs_researcher.toml"
+if ! cmp -s "$profile_source/docs_researcher.toml" "$docs_destination"; then
+  backup_path "$docs_destination" "agents/docs_researcher.toml"
+  install -m 0644 "$profile_source/docs_researcher.toml" "$docs_destination"
+fi
+
+if [[ "$manage_config" == "true" ]]; then
+  if ! python3 "$merge_config" --check "$config_destination" >/dev/null 2>&1; then
+    backup_path "$config_destination" "config.toml"
+    python3 "$merge_config" "$config_destination"
+  fi
+fi
+
+if [[ "$with_agents_snippet" == "true" ]]; then
+  if ! python3 "$ensure_snippet" --check "$agents_md_destination" "$payload_root/AGENTS.md.snippet"; then
+    backup_path "$agents_md_destination" "AGENTS.md"
+    python3 "$ensure_snippet" "$agents_md_destination" "$payload_root/AGENTS.md.snippet"
+  fi
+fi
+
+if ! python3 -c '
+import json, sys
+manifest_path, probe_path, profile, scope, version = sys.argv[1:]
+try:
+    manifest = json.load(open(manifest_path, encoding="utf-8"))
+    probe = json.load(open(probe_path, encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1)
+matches = (
+    manifest.get("selected_profile") == profile
+    and manifest.get("scope") == scope
+    and manifest.get("bundle_version") == version
+    and manifest.get("runtime_probe") == probe
+)
+raise SystemExit(0 if matches else 1)
+' "$manifest_destination" "$probe_file" "$profile" "$scope" "$version"; then
+  backup_path "$manifest_destination" "install-manifest.json"
+  python3 "$write_manifest" \
+    --output "$manifest_destination" \
+    --profile "$profile" \
+    --scope "$scope" \
+    --source-version "$version" \
+    --probe "$probe_file"
+fi
+
+printf 'Installed Versatile Agent %s\n' "$version"
+printf '  scope:   %s\n' "$scope"
+printf '  profile: %s\n' "$profile"
+printf '  skill:   %s\n' "$skill_destination"
+printf '  agents:  %s\n' "$agent_destination"
+printf '  manifest:%s\n' " $manifest_destination"
+if [[ "$backup_created" == "true" ]]; then
+  printf '  backup:  %s\n' "$backup_destination"
+fi
+printf 'Start a fresh Codex task so skill and agent discovery reloads the installed files.\n'
