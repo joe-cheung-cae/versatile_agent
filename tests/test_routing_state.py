@@ -187,6 +187,19 @@ class RoutingStateTests(unittest.TestCase):
                 result = MODULE.decide(route_document("native-spawn.json", [precheck()]) | {"runtime_records": runtime})
                 self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
 
+    def test_precheck_rejects_noncanonical_extra_exposure(self) -> None:
+        document = read_fixture("luna-success.json")
+        document["events"] = document["events"][:1]
+        active = next(
+            record
+            for record in document["runtime_records"]["records"]
+            if record["runtime_id"] == ACTIVE_RUNTIME_ID
+        )
+        active["exposed_agent_types"].append(" docs_researcher_luna")
+        result = MODULE.decide(document)
+        self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
+        self.assertEqual(result["next_action"], "none")
+
     def test_precheck_rejects_diagnostic_wrong_interface_and_complementary_app_evidence(self) -> None:
         diagnostic = read_fixture("native-spawn.json")
         diagnostic["records"].insert(0, active_interface_record())
@@ -459,6 +472,25 @@ class RoutingStateTests(unittest.TestCase):
                     ],
                 )
                 document["runtime_records"] = runtime
+                result = MODULE.decide(document)
+                self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
+                self.assertEqual(result["next_action"], "none")
+
+    def test_effective_route_rejects_noncanonical_extra_capabilities(self) -> None:
+        mutations = (
+            lambda record: record["exposed_agent_types"].append(" docs_researcher_luna"),
+            lambda record: record["model_support"].append(" gpt-5.6-luna"),
+            lambda record: record["effort_support"]["gpt-5.6-luna"].append(" max"),
+        )
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                document = read_fixture("luna-success.json")
+                attempt = next(
+                    record
+                    for record in document["runtime_records"]["records"]
+                    if record["runtime_id"] == "fixture-luna-attempt"
+                )
+                mutation(attempt)
                 result = MODULE.decide(document)
                 self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
                 self.assertEqual(result["next_action"], "none")

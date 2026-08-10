@@ -444,6 +444,16 @@ def _precheck(output: dict[str, Any], document: dict[str, Any], event: dict[str,
             evidence=evidence,
         )
         return
+    if not _canonical_capability_list(exposed):
+        _set_decision(
+            output,
+            state=STATE_STOP_UNVERIFIED,
+            next_action="none",
+            reason="precheck_capability_exposure_is_noncanonical",
+            failure_class="ROUTE_METADATA_CONFLICT",
+            evidence=evidence,
+        )
+        return
     if not required.issubset(exposed):
         _set_decision(
             output,
@@ -516,6 +526,12 @@ def _query_effective_route(
         return "unverified", None, None, "ROUTE_METADATA_MISSING"
 
     record = selected["record"]
+    if not (
+        _canonical_capability_list(record["exposed_agent_types"])
+        and _canonical_capability_list(record["model_support"])
+        and _canonical_capability_map(record["effort_support"])
+    ):
+        return "unverified", None, record, "ROUTE_METADATA_CONFLICT"
     effective_route = _effective_route_from_record(record)
     if effective_route is None:
         return "unverified", None, record, "ROUTE_METADATA_MISSING"
