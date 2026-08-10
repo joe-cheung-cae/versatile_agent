@@ -46,6 +46,16 @@ def run_tool(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def run_tool_input(command: str, document: dict, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(HELPER), command, "-", *args],
+        input=json.dumps(document),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
 def run_detector(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [str(DETECTOR), *args],
@@ -181,6 +191,30 @@ class RuntimeRecordTests(unittest.TestCase):
         combined = {"schema_version": 1, "records": native["records"] + app_task["records"]}
         with self.assertRaises(MODULE.RuntimeRecordError):
             MODULE.query_record(combined, require_effective_model="gpt-5.6-luna")
+
+    def test_diagnostic_only_native_route_fails_closed(self) -> None:
+        document = read_fixture("native-spawn.json")
+        document["records"][0]["diagnostic_only"] = True
+        MODULE.validate_document(document)
+        for flag, value in (
+            ("--require-effective-agent-type", "docs_researcher_luna"),
+            ("--require-effective-model", "gpt-5.6-luna"),
+            ("--require-effective-effort", "max"),
+        ):
+            with self.subTest(flag=flag):
+                result = run_tool_input(
+                    "query",
+                    document,
+                    "--runtime-id",
+                    "fixture-native-luna-attempt",
+                    flag,
+                    value,
+                )
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("STOP_UNVERIFIED", result.stderr)
+                self.assertNotIn("does not match", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout, "")
 
     def test_missing_or_unknown_native_effective_metadata_fails_closed(self) -> None:
         for fixture, runtime_id in (
@@ -436,6 +470,134 @@ class RuntimeRecordTests(unittest.TestCase):
             self.assertEqual(result.returncode, 2, fixture)
             self.assertIn("runtime-record error:", result.stderr, fixture)
             self.assertNotIn("Traceback", result.stderr, fixture)
+
+    def test_document_record_and_assertion_schemas_are_closed(self) -> None:
+        base = read_fixture("cli-and-app-records.json")
+        MODULE.validate_document(base)
+        closed_mutations = (
+            ("document-extra", lambda document: document.update({"unexpected": {"payload": []}})),
+            (
+                "record-effective-extra",
+                lambda document: document["records"][0].update({"effective_model": "gpt-5.6-luna"}),
+            ),
+            (
+                "record-foreign-evidence-extra",
+                lambda document: document["records"][0].update({"foreign_evidence": {"source": []}}),
+            ),
+        )
+        for name, mutate in closed_mutations:
+            with self.subTest(name=name):
+                mutated = copy.deepcopy(base)
+                mutate(mutated)
+                result = run_tool_input("validate", mutated)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("runtime-record error:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+
+        detected_result = run_detector(
+            "--format",
+            "json",
+            "--codex-bin",
+            str(FIXTURE_ROOT / "cli-v1-luna.sh"),
+            "--app-codex-bin",
+            str(FIXTURE_ROOT / "app-v1-luna.sh"),
+        )
+        self.assertEqual(detected_result.returncode, 0, detected_result.stderr)
+        detected = json.loads(detected_result.stdout)
+        MODULE.validate_document(detected)
+        self.assertEqual(MODULE.canonical_json(detected), detected_result.stdout)
+
+        assertion_base = copy.deepcopy(detected)
+        assertion_mutations = (
+            (
+                "unknown-name",
+                lambda document: document.update(
+                    {
+                        "diagnostic_assertions": {
+                            "foreign_assertion": copy.deepcopy(
+                                document["diagnostic_assertions"]["native_v2_luna"]
+                            )
+                        }
+                    }
+                ),
+            ),
+            (
+                "assertion-missing-field",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"].pop("value"),
+            ),
+            (
+                "assertion-extra-field",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"].update({"extra": []}),
+            ),
+            (
+                "assertion-non-object",
+                lambda document: document["diagnostic_assertions"].update({"native_v2_luna": []}),
+            ),
+            (
+                "assertion-diagnostic-integer",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"].update(
+                    {"diagnostic_only": 1}
+                ),
+            ),
+            (
+                "assertion-value-list",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"].update({"value": []}),
+            ),
+            (
+                "assertion-value-null",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"].update({"value": None}),
+            ),
+            (
+                "assertion-evidence-non-object",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"].update(
+                    {"evidence_source": None}
+                ),
+            ),
+            (
+                "assertion-evidence-missing-field",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"]["evidence_source"].pop(
+                    "kind"
+                ),
+            ),
+            (
+                "assertion-evidence-extra-field",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"]["evidence_source"].update(
+                    {"runtime_id": "foreign"}
+                ),
+            ),
+            (
+                "assertion-evidence-kind-value",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"]["evidence_source"].update(
+                    {"kind": "foreign"}
+                ),
+            ),
+            (
+                "assertion-evidence-kind-type",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"]["evidence_source"].update(
+                    {"kind": []}
+                ),
+            ),
+            (
+                "assertion-evidence-scope-value",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"]["evidence_source"].update(
+                    {"scope": "single-runtime"}
+                ),
+            ),
+            (
+                "assertion-evidence-scope-type",
+                lambda document: document["diagnostic_assertions"]["native_v2_luna"]["evidence_source"].update(
+                    {"scope": 1}
+                ),
+            ),
+        )
+        for name, mutate in assertion_mutations:
+            with self.subTest(name=name):
+                mutated = copy.deepcopy(assertion_base)
+                mutate(mutated)
+                result = run_tool_input("validate", mutated)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn("runtime-record error:", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_provenance_contract_rejects_disguised_composites(self) -> None:
         document = read_fixture("native-spawn.json")

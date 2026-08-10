@@ -75,6 +75,11 @@ REQUIRED_FIELDS = (
     "captured_at",
     "diagnostic_only",
 )
+DOCUMENT_FIELDS = {"schema_version", "records", "diagnostic_assertions"}
+RECORD_FIELDS = set(REQUIRED_FIELDS) | {"observed"}
+DIAGNOSTIC_ASSERTION_NAMES = {"native_v2_luna"}
+NATIVE_ASSERTION_FIELDS = {"value", "evidence_source", "diagnostic_only"}
+ASSERTION_EVIDENCE_FIELDS = {"kind", "scope"}
 INTERFACE_KINDS = {
     "cli_binary",
     "app_bundled_cli",
@@ -184,6 +189,9 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
     location = f"records[{index}]"
     if not isinstance(record, dict):
         raise _fail(location, "must be an object")
+    extra = set(record) - RECORD_FIELDS
+    if extra:
+        raise _fail(location, f"unsupported fields: {sorted(extra)}")
     missing = [field for field in REQUIRED_FIELDS if field not in record]
     if missing:
         raise _fail(location, f"missing required fields: {missing}")
@@ -253,6 +261,9 @@ def validate_document(document: Any) -> dict[str, Any]:
 
     if not isinstance(document, dict):
         raise RuntimeRecordError("document: must be an object")
+    extra = set(document) - DOCUMENT_FIELDS
+    if extra:
+        raise RuntimeRecordError(f"document: unsupported fields: {sorted(extra)}")
     schema_version = document.get("schema_version")
     if type(schema_version) is not int or schema_version != SCHEMA_VERSION:
         raise RuntimeRecordError(f"document.schema_version must be {SCHEMA_VERSION}")
@@ -272,16 +283,41 @@ def validate_document(document: Any) -> dict[str, Any]:
         raise RuntimeRecordError("document.diagnostic_assertions: must be an object")
     for name, assertion in assertions.items():
         assertion_location = f"diagnostic_assertions.{name}"
+        if name not in DIAGNOSTIC_ASSERTION_NAMES:
+            raise _fail(assertion_location, "unsupported diagnostic assertion name")
         if not isinstance(assertion, dict):
             raise _fail(assertion_location, "must be an object with diagnostic_only=true")
-        if assertion.get("diagnostic_only") is not True:
+        missing = NATIVE_ASSERTION_FIELDS - set(assertion)
+        extra = set(assertion) - NATIVE_ASSERTION_FIELDS
+        if missing:
+            raise _fail(assertion_location, f"missing required fields: {sorted(missing)}")
+        if extra:
+            raise _fail(assertion_location, f"unsupported fields: {sorted(extra)}")
+        if assertion["diagnostic_only"] is not True:
             raise _fail(assertion_location, "must be diagnostic_only=true")
-        value = assertion.get("value")
-        if name == "native_v2_luna":
-            value_location = f"diagnostic_assertions.{name}.value"
-            _require_string(value, value_location)
-            if value not in {"yes", "no", UNKNOWN}:
-                raise _fail(value_location, "must be yes, no, or unknown")
+        value_location = f"diagnostic_assertions.{name}.value"
+        _require_string(assertion["value"], value_location)
+        if assertion["value"] not in {"yes", "no", UNKNOWN}:
+            raise _fail(value_location, "must be yes, no, or unknown")
+        evidence_source = assertion["evidence_source"]
+        if not isinstance(evidence_source, dict):
+            raise _fail(
+                f"diagnostic_assertions.{name}.evidence_source",
+                "must be an object",
+            )
+        evidence_location = f"diagnostic_assertions.{name}.evidence_source"
+        evidence_missing = ASSERTION_EVIDENCE_FIELDS - set(evidence_source)
+        evidence_extra = set(evidence_source) - ASSERTION_EVIDENCE_FIELDS
+        if evidence_missing:
+            raise _fail(evidence_location, f"missing required fields: {sorted(evidence_missing)}")
+        if evidence_extra:
+            raise _fail(evidence_location, f"unsupported fields: {sorted(evidence_extra)}")
+        _require_string(evidence_source["kind"], f"{evidence_location}.kind")
+        if evidence_source["kind"] != "argument_assertion":
+            raise _fail(f"{evidence_location}.kind", "must be argument_assertion")
+        _require_string(evidence_source["scope"], f"{evidence_location}.scope")
+        if evidence_source["scope"] != "diagnostic-only":
+            raise _fail(f"{evidence_location}.scope", "must be diagnostic-only")
     return document
 
 
@@ -333,6 +369,8 @@ def _preflight_effective_route(record: dict[str, Any]) -> dict[str, str]:
             + record["interface_kind"]
             + "; STOP_UNVERIFIED"
         )
+    if record["diagnostic_only"] is not False:
+        raise RuntimeRecordError("diagnostic-only native evidence cannot prove an effective route; STOP_UNVERIFIED")
     observed = record.get("observed")
     if not isinstance(observed, dict):
         raise RuntimeRecordError("native effective route observed evidence is not an object; STOP_UNVERIFIED")
