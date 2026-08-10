@@ -62,6 +62,12 @@ RUNTIME_RECORD_FIXTURES = {
     "cli-v2-luna.sh",
     "cli-v2-no-luna.sh",
 }
+ROUTING_FIXTURES = {
+    "luna-routing-rejection.json",
+    "luna-mismatch.json",
+    "luna-success.json",
+    "terra-success.json",
+}
 
 
 class Validation:
@@ -178,6 +184,26 @@ def validate_runtime_records(root: Path, check: Validation) -> None:
     )
 
 
+def validate_route_research(root: Path, check: Validation) -> None:
+    helper = root / "payload/skills/versatile-dev/scripts/route_research.py"
+    focused_test = root / "tests/test_routing_state.py"
+    check.require(helper.is_file(), f"missing route-research helper: {helper}")
+    check.require(focused_test.is_file(), f"missing route-research test: {focused_test}")
+    for path in (helper, focused_test):
+        if path.is_file():
+            try:
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+            except (OSError, SyntaxError) as exc:
+                check.errors.append(f"invalid Python route-research file {path}: {exc}")
+
+    fixture_dir = root / "tests/fixtures/routing"
+    actual_fixtures = {path.name for path in fixture_dir.iterdir()} if fixture_dir.is_dir() else set()
+    check.require(
+        actual_fixtures == ROUTING_FIXTURES,
+        f"routing fixture set mismatch: {sorted(actual_fixtures)}",
+    )
+
+
 def validate_root(root: Path, check: Validation) -> None:
     for relative in (
         "VERSION",
@@ -221,6 +247,7 @@ def main() -> int:
     validate_skill(root, check)
     validate_agents(root, check)
     validate_runtime_records(root, check)
+    validate_route_research(root, check)
 
     if check.errors:
         for error in check.errors:
