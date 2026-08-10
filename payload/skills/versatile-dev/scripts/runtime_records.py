@@ -171,7 +171,7 @@ def _validate_observed(record: dict[str, Any], location: str) -> None:
     if unknown_keys:
         raise _fail(location, f"unsupported keys: {sorted(unknown_keys)}")
     for key, value in observed.items():
-        _require_string(value, f"{location}.{key}", allow_empty=False)
+        _require_string(value, f"{location}.{key}", allow_empty=key.startswith("effective_"))
     if record["interface_kind"] == "app_task":
         effective_keys = set(observed) & {"effective_agent_type", "effective_model", "effective_effort"}
         if effective_keys:
@@ -379,27 +379,38 @@ def query_record(
             raise RuntimeRecordError(f"required effort support is absent/unknown: {requirement}")
 
     observed = selected.get("observed", {})
-    for key, required in (
-        ("agent_type", require_effective_agent_type),
-        ("model", require_effective_model),
-        ("effort", require_effective_effort),
-    ):
-        if required is None:
-            continue
+    effective_requirements = {
+        key: required
+        for key, required in (
+            ("agent_type", require_effective_agent_type),
+            ("model", require_effective_model),
+            ("effort", require_effective_effort),
+        )
+        if required is not None
+    }
+    if effective_requirements:
         if selected["interface_kind"] != "native_spawn_attempt":
             raise RuntimeRecordError(
-                "native effective "
-                + key
-                + " is unavailable for interface "
+                "native effective route is unavailable for interface "
                 + selected["interface_kind"]
                 + "; STOP_UNVERIFIED"
             )
-        field = f"effective_{key}"
-        actual = observed.get(field)
-        if actual in (None, "", UNKNOWN):
-            raise RuntimeRecordError(f"required native effective {field} is absent/unknown; STOP_UNVERIFIED")
-        if actual != required:
-            raise RuntimeRecordError(f"required native effective {field} does not match selected record")
+        missing_effective = [
+            f"effective_{key}"
+            for key in ("agent_type", "model", "effort")
+            if observed.get(f"effective_{key}") in (None, "", UNKNOWN)
+        ]
+        if missing_effective:
+            raise RuntimeRecordError(
+                "native effective route is incomplete: "
+                + ", ".join(missing_effective)
+                + "; STOP_UNVERIFIED"
+            )
+        for key, required in effective_requirements.items():
+            field = f"effective_{key}"
+            actual = observed[field]
+            if actual != required:
+                raise RuntimeRecordError(f"required native effective {field} does not match selected record")
 
     return {
         "schema_version": SCHEMA_VERSION,

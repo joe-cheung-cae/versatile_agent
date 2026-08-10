@@ -215,6 +215,40 @@ class RuntimeRecordTests(unittest.TestCase):
             {"cli_binary", "app_bundled_cli"},
         )
 
+    def test_partial_native_effective_metadata_precedes_mismatch(self) -> None:
+        fixture = FIXTURE_ROOT / "native-partial-effective-mismatch.json"
+        document = read_fixture(fixture.name)
+        MODULE.validate_document(document)
+        self.assertEqual(run_tool("validate", str(fixture)).returncode, 0)
+
+        all_criteria = run_tool(
+            "query",
+            str(fixture),
+            "--runtime-id",
+            "fixture-native-partial-effective-mismatch",
+            "--require-effective-agent-type",
+            "docs_researcher_luna",
+            "--require-effective-model",
+            "gpt-5.6-luna",
+            "--require-effective-effort",
+            "max",
+        )
+        self.assertEqual(all_criteria.returncode, 2)
+        self.assertIn("STOP_UNVERIFIED", all_criteria.stderr)
+        self.assertNotIn("does not match", all_criteria.stderr)
+
+        agent_only = run_tool(
+            "query",
+            str(fixture),
+            "--runtime-id",
+            "fixture-native-partial-effective-mismatch",
+            "--require-effective-agent-type",
+            "docs_researcher_luna",
+        )
+        self.assertEqual(agent_only.returncode, 2)
+        self.assertIn("STOP_UNVERIFIED", agent_only.stderr)
+        self.assertNotIn("does not match", agent_only.stderr)
+
     def test_requested_effective_mismatch_is_valid_native_evidence(self) -> None:
         document = read_fixture("native-route-mismatch.json")
         MODULE.validate_document(document)

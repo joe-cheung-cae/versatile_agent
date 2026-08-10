@@ -44,6 +44,7 @@ RUNTIME_RECORD_FIXTURES = {
     "missing-field.json",
     "mixed-evidence.json",
     "native-effective-unknown.json",
+    "native-partial-effective-mismatch.json",
     "native-request-only.json",
     "native-spawn.json",
     "native-assertion-list.json",
