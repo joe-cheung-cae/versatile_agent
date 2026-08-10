@@ -160,9 +160,11 @@ def _validate_evidence_source(value: Any, location: str, runtime_id: str, interf
 
 
 def _validate_observed(record: dict[str, Any], location: str) -> None:
-    observed = record.get("observed")
-    if observed is None:
+    if "observed" not in record:
         return
+    observed = record["observed"]
+    if observed is None:
+        raise _fail(location, "must be an object; null is not valid")
     if record["interface_kind"] in PROBE_KINDS:
         raise _fail(location, "CLI/App-bundled CLI probes may not contain observations")
     if not isinstance(observed, dict):
@@ -318,6 +320,55 @@ def load_document(path: str | Path) -> dict[str, Any]:
     return validate_document(document)
 
 
+def _canonical_known_string(value: Any) -> bool:
+    return isinstance(value, str) and bool(value) and value != UNKNOWN and value == value.strip()
+
+
+def _preflight_effective_route(record: dict[str, Any]) -> dict[str, str]:
+    """Establish a complete, same-record native effective route before queries."""
+
+    if record["interface_kind"] != "native_spawn_attempt":
+        raise RuntimeRecordError(
+            "native effective route is unavailable for interface "
+            + record["interface_kind"]
+            + "; STOP_UNVERIFIED"
+        )
+    observed = record.get("observed")
+    if not isinstance(observed, dict):
+        raise RuntimeRecordError("native effective route observed evidence is not an object; STOP_UNVERIFIED")
+
+    effective_fields = ("effective_agent_type", "effective_model", "effective_effort")
+    invalid_fields = [field for field in effective_fields if not _canonical_known_string(observed.get(field))]
+    if invalid_fields:
+        raise RuntimeRecordError(
+            "native effective route is incomplete or non-canonical: "
+            + ", ".join(invalid_fields)
+            + "; STOP_UNVERIFIED"
+        )
+
+    effective_agent_type = observed["effective_agent_type"]
+    effective_model = observed["effective_model"]
+    effective_effort = observed["effective_effort"]
+    exposed_agent_types = record["exposed_agent_types"]
+    if not isinstance(exposed_agent_types, list) or not exposed_agent_types or effective_agent_type not in exposed_agent_types:
+        raise RuntimeRecordError("native effective route contradicts exposed_agent_types; STOP_UNVERIFIED")
+
+    model_support = record["model_support"]
+    if not isinstance(model_support, list) or not model_support or effective_model not in model_support:
+        raise RuntimeRecordError("native effective route contradicts model_support; STOP_UNVERIFIED")
+
+    effort_support = record["effort_support"]
+    supported_efforts = effort_support.get(effective_model) if isinstance(effort_support, dict) else None
+    if not isinstance(supported_efforts, list) or not supported_efforts or effective_effort not in supported_efforts:
+        raise RuntimeRecordError("native effective route contradicts effort_support; STOP_UNVERIFIED")
+
+    return {
+        "agent_type": effective_agent_type,
+        "model": effective_model,
+        "effort": effective_effort,
+    }
+
+
 def query_record(
     document: dict[str, Any],
     *,
@@ -346,6 +397,18 @@ def query_record(
         if len(matches) != 1:
             raise RuntimeRecordError(f"runtime_id must select exactly one record: {runtime_id}")
         selected = matches[0]
+
+    effective_requirements = {
+        key: required
+        for key, required in (
+            ("agent_type", require_effective_agent_type),
+            ("model", require_effective_model),
+            ("effort", require_effective_effort),
+        )
+        if required is not None
+    }
+    effective_route = _preflight_effective_route(selected) if effective_requirements else {}
+
     if interface_kind is not None and selected["interface_kind"] != interface_kind:
         raise RuntimeRecordError(
             f"runtime_id {selected['runtime_id']} has interface_kind {selected['interface_kind']}, not {interface_kind}"
@@ -378,39 +441,10 @@ def query_record(
         if efforts == UNKNOWN or model not in efforts or efforts[model] == UNKNOWN or effort not in efforts[model]:
             raise RuntimeRecordError(f"required effort support is absent/unknown: {requirement}")
 
-    observed = selected.get("observed", {})
-    effective_requirements = {
-        key: required
-        for key, required in (
-            ("agent_type", require_effective_agent_type),
-            ("model", require_effective_model),
-            ("effort", require_effective_effort),
-        )
-        if required is not None
-    }
-    if effective_requirements:
-        if selected["interface_kind"] != "native_spawn_attempt":
-            raise RuntimeRecordError(
-                "native effective route is unavailable for interface "
-                + selected["interface_kind"]
-                + "; STOP_UNVERIFIED"
-            )
-        missing_effective = [
-            f"effective_{key}"
-            for key in ("agent_type", "model", "effort")
-            if observed.get(f"effective_{key}") in (None, "", UNKNOWN)
-        ]
-        if missing_effective:
-            raise RuntimeRecordError(
-                "native effective route is incomplete: "
-                + ", ".join(missing_effective)
-                + "; STOP_UNVERIFIED"
-            )
-        for key, required in effective_requirements.items():
-            field = f"effective_{key}"
-            actual = observed[field]
-            if actual != required:
-                raise RuntimeRecordError(f"required native effective {field} does not match selected record")
+    for key, required in effective_requirements.items():
+        field = f"effective_{key}"
+        if effective_route[key] != required:
+            raise RuntimeRecordError(f"required native effective {field} does not match selected record")
 
     return {
         "schema_version": SCHEMA_VERSION,

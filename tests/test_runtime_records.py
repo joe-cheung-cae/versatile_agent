@@ -249,6 +249,21 @@ class RuntimeRecordTests(unittest.TestCase):
         self.assertIn("STOP_UNVERIFIED", agent_only.stderr)
         self.assertNotIn("does not match", agent_only.stderr)
 
+        ordering = run_tool(
+            "query",
+            str(fixture),
+            "--runtime-id",
+            "fixture-native-partial-effective-mismatch",
+            "--require-model",
+            "gpt-9.9-unavailable",
+            "--require-effective-agent-type",
+            "docs_researcher_luna",
+        )
+        self.assertEqual(ordering.returncode, 2)
+        self.assertIn("STOP_UNVERIFIED", ordering.stderr)
+        self.assertNotIn("required model support is absent/unknown", ordering.stderr)
+        self.assertNotIn("does not match", ordering.stderr)
+
     def test_requested_effective_mismatch_is_valid_native_evidence(self) -> None:
         document = read_fixture("native-route-mismatch.json")
         MODULE.validate_document(document)
@@ -272,6 +287,112 @@ class RuntimeRecordTests(unittest.TestCase):
             )
         self.assertIn("does not match", str(context.exception))
         self.assertNotIn("STOP_UNVERIFIED", str(context.exception))
+
+    def test_noncanonical_effective_values_fail_closed(self) -> None:
+        for fixture_name, runtime_id in (
+            ("native-whitespace-effective.json", "fixture-native-whitespace-effective"),
+            ("native-padded-effective.json", "fixture-native-padded-effective"),
+        ):
+            fixture = FIXTURE_ROOT / fixture_name
+            document = read_fixture(fixture_name)
+            MODULE.validate_document(document)
+            self.assertEqual(run_tool("validate", str(fixture)).returncode, 0, fixture_name)
+            result = run_tool(
+                "query",
+                str(fixture),
+                "--runtime-id",
+                runtime_id,
+                "--require-effective-agent-type",
+                "docs_researcher_terra",
+                "--require-effective-model",
+                "gpt-5.6-terra",
+                "--require-effective-effort",
+                "high",
+            )
+            self.assertEqual(result.returncode, 2, fixture_name)
+            self.assertIn("STOP_UNVERIFIED", result.stderr, fixture_name)
+            self.assertNotIn("does not match", result.stderr, fixture_name)
+            self.assertNotIn("Traceback", result.stderr, fixture_name)
+
+    def test_observed_null_fails_validation_without_traceback(self) -> None:
+        fixture = FIXTURE_ROOT / "native-observed-null.json"
+        validation = run_tool("validate", str(fixture))
+        self.assertEqual(validation.returncode, 2)
+        self.assertIn("runtime-record error:", validation.stderr)
+        self.assertNotIn("Traceback", validation.stderr)
+
+        query = run_tool(
+            "query",
+            str(fixture),
+            "--runtime-id",
+            "fixture-native-observed-null",
+            "--require-effective-agent-type",
+            "docs_researcher_luna",
+        )
+        self.assertEqual(query.returncode, 2)
+        self.assertIn("runtime-record error:", query.stderr)
+        self.assertNotIn("Traceback", query.stderr)
+
+    def test_effective_route_support_conflicts_fail_closed(self) -> None:
+        fixture = FIXTURE_ROOT / "native-effective-support-conflict.json"
+        document = read_fixture(fixture.name)
+        MODULE.validate_document(document)
+        self.assertEqual(run_tool("validate", str(fixture)).returncode, 0)
+        query = run_tool(
+            "query",
+            str(fixture),
+            "--runtime-id",
+            "fixture-native-effective-support-conflict",
+            "--require-effective-agent-type",
+            "docs_researcher_luna",
+            "--require-effective-model",
+            "gpt-5.6-luna",
+            "--require-effective-effort",
+            "max",
+        )
+        self.assertEqual(query.returncode, 2)
+        self.assertIn("STOP_UNVERIFIED", query.stderr)
+        self.assertNotIn("does not match", query.stderr)
+
+        base = read_fixture("native-route-mismatch.json")
+        mutations = (
+            ("exposure", lambda record: record.update({"exposed_agent_types": []})),
+            (
+                "model",
+                lambda record: record.update(
+                    {
+                        "model_support": ["gpt-5.6-luna"],
+                        "effort_support": {"gpt-5.6-luna": ["max"]},
+                    }
+                ),
+            ),
+            (
+                "effort",
+                lambda record: record.update(
+                    {
+                        "effort_support": {
+                            "gpt-5.6-luna": ["max"],
+                            "gpt-5.6-terra": [],
+                        }
+                    }
+                ),
+            ),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                mutated = copy.deepcopy(base)
+                mutate(mutated["records"][0])
+                MODULE.validate_document(mutated)
+                with self.assertRaises(MODULE.RuntimeRecordError) as context:
+                    MODULE.query_record(
+                        mutated,
+                        runtime_id="fixture-native-route-mismatch",
+                        require_effective_agent_type="docs_researcher_terra",
+                        require_effective_model="gpt-5.6-terra",
+                        require_effective_effort="high",
+                    )
+                self.assertIn("STOP_UNVERIFIED", str(context.exception))
+                self.assertNotIn("does not match", str(context.exception))
 
     def test_invalid_and_unknown_fact_inputs_fail_nonzero(self) -> None:
         for fixture in (

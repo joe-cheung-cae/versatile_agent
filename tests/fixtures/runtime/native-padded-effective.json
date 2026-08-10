@@ -1,0 +1,33 @@
+{
+  "records": [
+    {
+      "binary_path": "",
+      "captured_at": "2026-08-08T00:00:00Z",
+      "diagnostic_only": false,
+      "effort_support": {
+        "gpt-5.6-terra": ["high"]
+      },
+      "evidence_source": {
+        "kind": "fixture_native_spawn_attempt",
+        "runtime_id": "fixture-native-padded-effective",
+        "scope": "single-runtime"
+      },
+      "exposed_agent_types": ["docs_researcher_terra"],
+      "interface_kind": "native_spawn_attempt",
+      "model_support": ["gpt-5.6-terra"],
+      "multi_agent_generation": "v2",
+      "observed": {
+        "agent_type": "docs_researcher_luna",
+        "effort": "max",
+        "model": "gpt-5.6-luna",
+        "effective_agent_type": "docs_researcher_terra",
+        "effective_model": " gpt-5.6-terra ",
+        "effective_effort": "high"
+      },
+      "runtime_id": "fixture-native-padded-effective",
+      "schema_version": 1,
+      "version": "unknown"
+    }
+  ],
+  "schema_version": 1
+}
