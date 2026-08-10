@@ -8,6 +8,7 @@ import copy
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -246,6 +247,34 @@ class RoutingStateTests(unittest.TestCase):
             ),
         }
         for trigger, mutation in mutations.items():
+            with self.subTest(trigger=trigger):
+                document = explicit_rejection_document(trigger)
+                attempt = next(
+                    record
+                    for record in document["runtime_records"]["records"]
+                    if record["runtime_id"] == f"fixture-{trigger}-attempt"
+                )
+                mutation(attempt)
+                result = MODULE.decide(document)
+                self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
+                self.assertEqual(result["fallback_attempt"], 0)
+
+    def test_rejection_capability_facts_must_be_canonical(self) -> None:
+        adversaries = {
+            "requested_agent_unavailable": lambda record: record.update(
+                {"exposed_agent_types": [" docs_researcher_luna"]}
+            ),
+            "requested_model_unavailable": lambda record: record.update(
+                {"model_support": [" gpt-5.6-luna"]}
+            ),
+            "requested_effort_unsupported": lambda record: record.update(
+                {
+                    "model_support": ["gpt-5.6-luna"],
+                    "effort_support": {"gpt-5.6-luna": [" max"]},
+                }
+            ),
+        }
+        for trigger, mutation in adversaries.items():
             with self.subTest(trigger=trigger):
                 document = explicit_rejection_document(trigger)
                 attempt = next(
@@ -617,6 +646,27 @@ class RoutingStateTests(unittest.TestCase):
         with self.assertRaises(MODULE.RouteResearchError):
             MODULE.decide(counter)
 
+    def test_mixed_type_schema_keys_raise_route_errors_not_type_errors(self) -> None:
+        top_level = read_fixture("luna-success.json")
+        top_level[1] = True
+        with self.assertRaises(MODULE.RouteResearchError):
+            MODULE.decide(top_level)
+
+        event = read_fixture("luna-success.json")
+        event["events"][0][1] = True
+        with self.assertRaises(MODULE.RouteResearchError):
+            MODULE.decide(event)
+
+        evidence = read_fixture("luna-routing-rejection.json")
+        evidence["events"][1]["routing_evidence"][1] = True
+        with self.assertRaises(MODULE.RouteResearchError):
+            MODULE.decide(evidence)
+
+        runtime = read_fixture("luna-success.json")
+        runtime["runtime_records"]["records"][0][1] = True
+        with self.assertRaises(MODULE.RouteResearchError):
+            MODULE.decide(runtime)
+
     def test_terminal_states_cannot_transition_and_replay_is_deterministic(self) -> None:
         document = read_fixture("luna-success.json")
         first = MODULE.decide(document)
@@ -680,6 +730,19 @@ class RoutingStateTests(unittest.TestCase):
         )
         self.assertEqual(malformed.returncode, 2)
         self.assertNotIn("Traceback", malformed.stderr)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            invalid_utf8 = Path(temporary) / "invalid.json"
+            invalid_utf8.write_bytes(b"\xff\xfe\xfa")
+            unreadable = subprocess.run(
+                [sys.executable, str(HELPER), "decide", str(invalid_utf8)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        self.assertEqual(unreadable.returncode, 2)
+        self.assertIn("invalid UTF-8", unreadable.stderr)
+        self.assertNotIn("Traceback", unreadable.stderr)
 
 
 if __name__ == "__main__":

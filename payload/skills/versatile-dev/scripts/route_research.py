@@ -206,13 +206,23 @@ def _require_int(value: Any, location: str, *, maximum: int | None = None) -> in
     return value
 
 
+def _field_labels(values: set[Any]) -> list[str]:
+    labels: list[str] = []
+    for value in values:
+        try:
+            labels.append(repr(value))
+        except Exception:
+            labels.append(f"<{type(value).__name__}>")
+    return sorted(labels)
+
+
 def _check_fields(value: dict[str, Any], allowed: set[str], required: set[str], location: str) -> None:
     extra = set(value) - allowed
     if extra:
-        raise _error(location, f"unsupported fields: {sorted(extra)}")
+        raise _error(location, f"unsupported fields: {_field_labels(extra)}")
     missing = required - set(value)
     if missing:
-        raise _error(location, f"missing required fields: {sorted(missing)}")
+        raise _error(location, f"missing required fields: {_field_labels(missing)}")
 
 
 def _validate_routing_evidence(value: Any, location: str) -> dict[str, str]:
@@ -470,6 +480,28 @@ def _effective_route_from_record(record: dict[str, Any]) -> dict[str, str] | Non
     return fields  # type: ignore[return-value]
 
 
+def _canonical_capability_token(value: Any) -> bool:
+    return isinstance(value, str) and _TOKEN_RE.fullmatch(value) is not None and value != "unknown"
+
+
+def _canonical_capability_list(value: Any) -> bool:
+    if not isinstance(value, list):
+        return False
+    if not all(isinstance(item, str) for item in value):
+        return False
+    if len(value) != len(set(value)):
+        return False
+    return all(_canonical_capability_token(item) for item in value)
+
+
+def _canonical_capability_map(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    if not all(_canonical_capability_token(key) for key in value):
+        return False
+    return all(_canonical_capability_list(efforts) for efforts in value.values())
+
+
 def _query_effective_route(
     document: dict[str, Any], runtime_id: str, requested_route: dict[str, str]
 ) -> tuple[str, dict[str, str] | None, dict[str, Any] | None, str]:
@@ -573,24 +605,22 @@ def _validate_rejection_attempt(
     requested_model = requested_route["model"]
     requested_effort = requested_route["effort"]
     if trigger == "requested_agent_unavailable":
-        if exposed == runtime_records.UNKNOWN or not isinstance(exposed, list):
+        if not _canonical_capability_list(exposed):
             return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_agent in exposed:
             return "conflict", None, record, "ROUTE_METADATA_CONFLICT"
     elif trigger == "requested_model_unavailable":
-        if models == runtime_records.UNKNOWN or not isinstance(models, list):
+        if not _canonical_capability_list(models):
             return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_model in models:
             return "conflict", None, record, "ROUTE_METADATA_CONFLICT"
     elif trigger == "requested_effort_unsupported":
-        if models == runtime_records.UNKNOWN or not isinstance(models, list):
+        if not _canonical_capability_list(models) or not _canonical_capability_map(efforts):
             return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_model not in models:
             return "unverified", None, record, "ROUTE_METADATA_MISSING"
-        if efforts == runtime_records.UNKNOWN or not isinstance(efforts, dict):
-            return "unverified", None, record, "ROUTE_METADATA_MISSING"
         supported_efforts = efforts.get(requested_model)
-        if supported_efforts == runtime_records.UNKNOWN or not isinstance(supported_efforts, list):
+        if not isinstance(supported_efforts, list):
             return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_effort in supported_efforts:
             return "conflict", None, record, "ROUTE_METADATA_CONFLICT"
@@ -1067,7 +1097,10 @@ def canonical_json(value: dict[str, Any]) -> str:
 
 
 def load_document(path: str | Path) -> dict[str, Any]:
-    source = sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
+    try:
+        source = sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
+    except UnicodeError as exc:
+        raise _error("document", f"invalid UTF-8 input: {exc}") from exc
     try:
         document = json.loads(source)
     except json.JSONDecodeError as exc:
