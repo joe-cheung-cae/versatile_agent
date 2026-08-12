@@ -100,7 +100,7 @@ SENSITIVE_CONNECTOR_RE = re.compile(
 RAW_HTML_LINK_TAG_RE = re.compile(r"<\s*/?\s*a(?:\s|/?>)", re.IGNORECASE)
 RAW_HTML_HEADING_TAG_RE = re.compile(r"<\s*/?\s*h[1-6](?:\s|/?>)", re.IGNORECASE)
 RAW_HTML_TAG_PREFIX_RE = re.compile(
-    r"<\s*/?\s*(?:a|h[1-6])(?:\s|$)", re.IGNORECASE
+    r"<\s*/?\s*(a|h[1-6])(?:\s|$)", re.IGNORECASE
 )
 HTML_ENTITY_RE = re.compile(r"&(?:#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});", re.IGNORECASE)
 SENSITIVE_PREDICATE_START_RE = re.compile(
@@ -212,6 +212,10 @@ CONTRACT_CONTRADICTION_RULES: tuple[
             re.compile(r"\bno\s+(?:explicit\s+)?authori[sz]ation\s+(?:is\s+)?required\s+for\s+app(?:\s+user-visible)?\s+tasks?\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:do\s+not|don't|never)\s+require\s+(?:any\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:cannot|can't|must\s+not|should\s+not|may\s+not)\s+require\s+(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:do\s+not|don't|need\s+not|cannot|can't|must\s+not|should\s+not|may\s+not)\s+require\s+(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\bare\s+not\s+required\s+to\s+obtain\b[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\b(?:do\s+not|don't|need\s+not|cannot|can't|must\s+not|should\s+not|may\s+not)\s+rely\s+on\b[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\bneed\s+not\s+be\s+created\s+with\b[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"),
             re.compile(r"\b(?:create|creating)\s+(?:an?\s+)?app(?:\s+user-visible)?\s+task\b[^.!?;:]{0,80}\bwithout\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:may|can|could|will|is|are)\s+(?:be\s+)?created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}\b(?:may|can|could|will)\s+(?:be\s+)?created[^.!?;:]{0,40}\bby\s+default\b"),
@@ -421,6 +425,20 @@ APP_UNSAFE_REQUIRE_NEGATION_RE = re.compile(
     r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?"
     r"authori[sz]ation\b"
 )
+APP_UNSAFE_OPT_IN_NEGATION_RE = re.compile(
+    r"(?:"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\b"
+    r"(?:do\s+not|don't|need\s+not|cannot|can't|must\s+not|should\s+not|may\s+not)\s+require\b"
+    r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b|"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\bare\s+not\s+required\s+to\s+obtain\b"
+    r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b|"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\b"
+    r"(?:do\s+not|don't|need\s+not|cannot|can't|must\s+not|should\s+not|may\s+not)\s+rely\s+on\b"
+    r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b|"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\bneed\s+not\s+be\s+created\s+with\b"
+    r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"
+    r")"
+)
 
 
 class _SensitiveContractPolicy(NamedTuple):
@@ -628,7 +646,10 @@ def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) 
         return False
     if (
         policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
-        and APP_UNSAFE_REQUIRE_NEGATION_RE.search(fragment) is not None
+        and (
+            APP_UNSAFE_REQUIRE_NEGATION_RE.search(fragment) is not None
+            or APP_UNSAFE_OPT_IN_NEGATION_RE.search(fragment) is not None
+        )
     ):
         return False
     if (
@@ -763,6 +784,8 @@ def _normalize_markdown_target_details(
     if not target or target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
         return None, None
     target = re.split(r"[?#]", target, maxsplit=1)[0]
+    had_backslash = "\\" in target
+    target = target.replace("\\", "/")
     while target.startswith("./"):
         target = target[2:]
     if not target:
@@ -779,14 +802,17 @@ def _normalize_markdown_target_details(
     # first-level sibling file.
     path_casefold = target.casefold()
     invalid_file_shape = (
+        had_backslash
+        or
         ".md/" in path_casefold
         or (had_trailing_separator and normalized.casefold().endswith(".md"))
     )
-    diagnostic = (
-        "local Markdown destination has a file-shaped path suffix or trailing separator"
-        if invalid_file_shape
-        else None
-    )
+    if had_backslash:
+        diagnostic = "local Markdown destination contains a backslash separator or suffix"
+    elif invalid_file_shape:
+        diagnostic = "local Markdown destination has a file-shaped path suffix or trailing separator"
+    else:
+        diagnostic = None
     return normalized, diagnostic
 
 
@@ -820,13 +846,23 @@ def _raw_html_diagnostics(line: str) -> list[str]:
     return diagnostics
 
 
-def _raw_html_pending_prefix(line: str) -> str | None:
-    """Return a relevant raw-HTML opener that continues past this line."""
+def _raw_html_pending_kind(line: str, start: int = 0) -> str | None:
+    """Return the kind of the first relevant opener that spans past a line.
 
-    for match in RAW_HTML_TAG_PREFIX_RE.finditer(line):
-        if ">" not in line[match.start() :]:
-            return line[match.start() :]
-    return None
+    This intentionally retains only a bounded tag kind, not the growing source
+    prefix.  The caller consumes the next line until its first closing angle
+    bracket, so multiline raw-HTML handling stays linear in rendered input.
+    """
+
+    search_start = start
+    while True:
+        match = RAW_HTML_TAG_PREFIX_RE.search(line, search_start)
+        if match is None:
+            return None
+        close = line.find(">", match.start())
+        if close < 0:
+            return "link" if match.group(1).casefold() == "a" else "heading"
+        search_start = close + 1
 
 
 def _mask_raw_html_ignored_line(
@@ -886,7 +922,7 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
     diagnostics: list[str] = []
     fence_char: str | None = None
     fence_length = 0
-    pending: str | None = None
+    pending_kind: str | None = None
     inline_code_length: int | None = None
     comment_active = False
 
@@ -897,7 +933,7 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
 
     for line in lines:
         if fence_char is not None:
-            pending = None
+            pending_kind = None
             if _fence_closes(line, fence_char, fence_length):
                 fence_char = None
                 fence_length = 0
@@ -906,12 +942,12 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
             continue
         marker = _line_fence_marker(line)
         if marker is not None:
-            pending = None
+            pending_kind = None
             fence_char, fence_length = marker
             inline_code_length = None
             comment_active = False
             continue
-        if _is_rendered_indented_code_line(line) and pending is None:
+        if _is_rendered_indented_code_line(line) and pending_kind is None:
             # Inline-code/comment state inside an indented code block cannot
             # leak into the following rendered paragraph.
             inline_code_length = None
@@ -920,19 +956,24 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
         masked, inline_code_length, comment_active = _mask_raw_html_ignored_line(
             line, inline_code_length, comment_active
         )
-        if pending is not None:
-            combined = pending + "\n" + masked
-            add_all(_raw_html_diagnostics(combined))
-            pending = _raw_html_pending_prefix(combined)
+        if pending_kind is not None:
+            close = masked.find(">")
+            if close < 0:
+                continue
+            if pending_kind == "link":
+                add_all(["raw HTML link tag is outside the controlled Markdown dialect"])
+            else:
+                add_all(["raw HTML heading tag is outside the controlled Markdown dialect"])
+            pending_kind = _raw_html_pending_kind(masked, close + 1)
             continue
         add_all(_raw_html_diagnostics(masked))
-        pending = _raw_html_pending_prefix(masked)
+        pending_kind = _raw_html_pending_kind(masked)
 
-    if pending is not None:
-        if re.match(r"<\s*/?\s*a\b", pending, re.IGNORECASE):
-            diagnostics.append("unterminated raw HTML link tag opener")
+    if pending_kind is not None:
+        if pending_kind == "link":
+            add_all(["unterminated raw HTML link tag opener"])
         else:
-            diagnostics.append("unterminated raw HTML heading tag opener")
+            add_all(["unterminated raw HTML heading tag opener"])
     if fence_char is not None:
         diagnostics.append("raw HTML scan encountered an unclosed fenced code block")
     return diagnostics
@@ -1064,12 +1105,17 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
     lazy_continuation_active = False
     paragraph_active = False
     root_indented_code_active = False
+    blockquote_paragraph_open = False
+    blockquote_blank_pending = False
     for raw_line in text.splitlines():
         _, _, _, depth_exhausted = _peel_container_prefixes_details(raw_line)
         if depth_exhausted:
             diagnostics.append("container prefix depth exceeded in Markdown line")
 
         line, blockquote_count = _strip_blockquote_prefixes(raw_line)
+        if blockquote_count == 0:
+            blockquote_paragraph_open = False
+            blockquote_blank_pending = False
         if INVALID_LIST_SPACING_RE.match(line):
             diagnostics.append("list marker has more than four spaces after its marker")
             normalized.append("    " + line.lstrip())
@@ -1103,6 +1149,9 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 paragraph_open = False
             list_stack.append((marker_start, content_start, paragraph_open))
             normalized.append(content)
+            if blockquote_count > 0:
+                blockquote_paragraph_open = paragraph_open
+                blockquote_blank_pending = False
             lazy_continuation_active = False
             paragraph_active = False
             root_indented_code_active = False
@@ -1111,7 +1160,10 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
         if not line.strip():
             normalized.append(line)
             list_blank_pending = bool(list_stack)
-            if not list_stack:
+            if blockquote_count > 0:
+                blockquote_paragraph_open = False
+                blockquote_blank_pending = True
+            elif not list_stack:
                 paragraph_active = False
             continue
 
@@ -1119,6 +1171,8 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
             list_stack = []
             list_blank_pending = False
             lazy_continuation_active = False
+            blockquote_paragraph_open = False
+            blockquote_blank_pending = False
             normalized.append(line)
             paragraph_active = False
             root_indented_code_active = False
@@ -1176,6 +1230,9 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     list_blank_pending = False
                     paragraph_active = True
                     root_indented_code_active = False
+                    if blockquote_count > 0:
+                        blockquote_paragraph_open = True
+                        blockquote_blank_pending = False
                     continue
                 if candidate.startswith("\t") or candidate_leading >= 4:
                     # Four spaces beyond a list item's content start are an
@@ -1188,6 +1245,9 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     )
                     list_blank_pending = False
                     paragraph_active = False
+                    if blockquote_count > 0:
+                        blockquote_paragraph_open = False
+                        blockquote_blank_pending = True
                     continue
                 content, _, _, content_exhausted = _peel_container_prefixes_details(candidate)
                 if content_exhausted:
@@ -1196,6 +1256,9 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 normalized.append(content)
                 list_blank_pending = False
                 paragraph_active = False
+                if blockquote_count > 0:
+                    blockquote_paragraph_open = bool(content.strip())
+                    blockquote_blank_pending = False
                 continue
             if leading_spaces and blockquote_count == 0:
                 diagnostics.append("ambiguous list continuation indentation")
@@ -1230,7 +1293,7 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
         if not list_stack and blockquote_count > 0:
             leading_spaces = len(line) - len(line.lstrip(" "))
             if line.startswith("\t") or leading_spaces >= 4:
-                if paragraph_active and not root_indented_code_active:
+                if blockquote_paragraph_open and not blockquote_blank_pending:
                     normalized.append(
                         _RenderedLine(
                             line.lstrip(" \t"), paragraph_continuation=True
@@ -1238,10 +1301,13 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     )
                     root_indented_code_active = False
                     paragraph_active = True
+                    blockquote_paragraph_open = True
                 else:
                     normalized.append(_RenderedLine(line, indented_code=True))
                     root_indented_code_active = True
                     paragraph_active = False
+                    blockquote_paragraph_open = False
+                    blockquote_blank_pending = True
                 list_blank_pending = False
                 continue
 
@@ -1267,11 +1333,16 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     normalized.append(_RenderedLine("", indented_code=True))
                     root_indented_code_active = True
                     paragraph_active = False
+                blockquote_paragraph_open = False
+                blockquote_blank_pending = False
                 list_blank_pending = False
                 continue
         normalized.append(line)
         paragraph_active = True
         root_indented_code_active = False
+        if blockquote_count > 0:
+            blockquote_paragraph_open = True
+            blockquote_blank_pending = False
         list_blank_pending = False
     return normalized, diagnostics
 

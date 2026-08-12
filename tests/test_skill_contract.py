@@ -540,6 +540,11 @@ class SkillContractTests(unittest.TestCase):
             "App tasks must not require explicit current-request authorization.",
             "App tasks should not require explicit current-request authorization.",
             "App tasks may not require explicit current-request authorization.",
+            "App tasks do not require explicit current-request authorization.",
+            "App tasks need not require explicit current-request authorization.",
+            "App tasks are not required to obtain explicit current-request authorization.",
+            "App tasks should not rely on explicit current-request authorization.",
+            "App tasks need not be created with explicit current-request authorization.",
         )
         for addition in rejected:
             with self.subTest(addition=addition):
@@ -687,21 +692,29 @@ class SkillContractTests(unittest.TestCase):
 
     def test_markdown_reference_path_suffixes_fail_closed(self) -> None:
         suffixes = (
-            "model-routing.md/",
-            "model-routing.md%2F",
-            "sub/../model-routing.md/",
+            ("model-routing.md/", "model-routing.md"),
+            ("model-routing.md%2F", "model-routing.md"),
+            ("sub/../model-routing.md/", "model-routing.md"),
+            (r"model-routing.md\child", "model-routing.md/child"),
+            ("model-routing.md%5Cchild", "model-routing.md/child"),
+            ("model-routing.md%255Cchild", "model-routing.md/child"),
+            ("sub%5C..%5Cmodel-routing.md", "model-routing.md"),
         )
-        for suffix in suffixes:
+        for suffix, expected in suffixes:
             with self.subTest(suffix=suffix):
                 normalized, diagnostic = VALIDATOR._normalize_markdown_target_details(
                     suffix
                 )
-                self.assertEqual(normalized, "model-routing.md")
+                self.assertEqual(normalized, expected)
                 self.assertIsNotNone(diagnostic)
                 scan = VALIDATOR._scan_rendered_markdown_details(f"[nested]({suffix})")
-                self.assertEqual(scan.targets, ["model-routing.md"])
+                self.assertEqual(scan.targets, [expected])
                 self.assertTrue(
-                    any("file-shaped path suffix" in item for item in scan.diagnostics)
+                    any(
+                        "file-shaped path suffix" in item
+                        or "backslash separator" in item
+                        for item in scan.diagnostics
+                    )
                 )
                 reference_map = dict(self.references)
                 reference_map["workflow.md"] += f"\n[nested]({suffix})\n"
@@ -726,6 +739,52 @@ class SkillContractTests(unittest.TestCase):
             ),
             [],
         )
+
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details(
+                r"[external](https://example.com/model-routing.md%5Cchild)"
+                "\n[mail](mailto:docs@example.com)"
+            ).diagnostics,
+            [],
+        )
+
+    def test_raw_html_pending_state_is_bounded_and_linear(self) -> None:
+        for opener, diagnostic in (
+            ("<a", "raw HTML link tag"),
+            ("<h2", "raw HTML heading tag"),
+        ):
+            with self.subTest(opener=opener):
+                short = [opener, ' href="target"\n>']
+                self.assertTrue(
+                    any(
+                        diagnostic in item
+                        for item in VALIDATOR._raw_html_diagnostics_for_rendered_lines(short)
+                    )
+                )
+                self.assertTrue(
+                    any(
+                        "unterminated raw HTML" in item
+                        for item in VALIDATOR._raw_html_diagnostics_for_rendered_lines(
+                            [opener]
+                        )
+                    )
+                )
+
+                def pending_lines(size: int) -> list[str]:
+                    return [opener, *([" attribute"] * size), ">"]
+
+                baseline = VALIDATOR._raw_html_diagnostics_for_rendered_lines(
+                    pending_lines(128)
+                )
+                doubled = VALIDATOR._raw_html_diagnostics_for_rendered_lines(
+                    pending_lines(256)
+                )
+                self.assertEqual(doubled, baseline)
+
+        validator_source = VALIDATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("_raw_html_pending_kind", validator_source)
+        self.assertNotIn("combined = pending +", validator_source)
+        self.assertNotIn("_raw_html_pending_prefix", validator_source)
 
     def test_semantic_rendered_masking_and_linear_connector_chain(self) -> None:
         hidden = (
