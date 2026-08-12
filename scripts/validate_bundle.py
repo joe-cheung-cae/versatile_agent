@@ -1202,6 +1202,32 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                         "ambiguous lazy list continuation before indented content"
                     )
                     lazy_continuation_active = False
+                if blockquote_count > 0:
+                    # A blockquote marker can continue an outer list item
+                    # after the marker was already established on the item
+                    # line (for example ``- > paragraph``).  Its blank line
+                    # state belongs to that list item's paragraph, not to the
+                    # root list-content indentation after the quote marker.
+                    item_paragraph_open = list_stack[candidate_index][2]
+                    list_stack = list_stack[: candidate_index + 1]
+                    if item_paragraph_open and not list_blank_pending:
+                        normalized.append(
+                            _RenderedLine(
+                                line.lstrip(" \t"),
+                                paragraph_continuation=True,
+                            )
+                        )
+                        list_blank_pending = False
+                        paragraph_active = True
+                        root_indented_code_active = False
+                    else:
+                        normalized.append(
+                            _RenderedLine(line, indented_code=True)
+                        )
+                        list_blank_pending = False
+                        paragraph_active = False
+                        root_indented_code_active = True
+                    continue
                 candidate = line[1:] if line.startswith("\t") else line[candidate_indent:]
                 if INVALID_LIST_SPACING_RE.match(candidate):
                     diagnostics.append("list marker has more than four spaces after its marker")

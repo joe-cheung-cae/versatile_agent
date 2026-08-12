@@ -580,11 +580,13 @@ class SkillContractTests(unittest.TestCase):
             "ordinary paragraph\n      App tasks may be created by default.\n",
             "- ordinary paragraph\n      App tasks may be created by default.\n",
             "> ordinary paragraph\n>     App tasks may be created by default.\n",
+            "- > paragraph\n  >     App tasks may be created by default.\n",
         )
         blank_code_cases = (
             "ordinary paragraph\n\n      App tasks may be created by default.\n",
             "- ordinary paragraph\n\n      App tasks may be created by default.\n",
             "> ordinary paragraph\n>\n>     App tasks may be created by default.\n",
+            "- > paragraph\n  >\n  >     App tasks may be created by default.\n",
         )
 
         for case in open_cases:
