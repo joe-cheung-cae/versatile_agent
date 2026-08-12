@@ -113,6 +113,32 @@ class SkillContractTests(unittest.TestCase):
         )
         self.assert_semantic_rejects(moved_skill)
 
+    def test_canonical_block_stays_inside_its_designated_section(self) -> None:
+        def block(text: str, filename: str) -> str:
+            begin, end, _ = VALIDATOR.CANONICAL_BLOCKS[filename]
+            lines = text.splitlines()
+            start = lines.index(begin)
+            finish = lines.index(end)
+            return "\n".join(lines[start : finish + 1])
+
+        skill_block = block(self.skill, "SKILL.md")
+        moved_skill = self.skill.replace(skill_block + "\n", "", 1) + "\n" + skill_block + "\n"
+        self.assert_semantic_rejects(moved_skill)
+        self.assert_semantic_rejects(
+            self.skill.replace("<!-- BEGIN versatile-dev canonical contract -->", "## Inserted peer\n<!-- BEGIN versatile-dev canonical contract -->", 1)
+        )
+
+        routing_block = block(self.routing, "model-routing.md")
+        without_routing_block = self.routing.replace(routing_block + "\n", "", 1)
+        moved_routing = without_routing_block.replace(
+            "## 证据分层与 runtime record\n",
+            "## 证据分层与 runtime record\n\n" + routing_block + "\n",
+            1,
+        )
+        references = dict(self.references)
+        references["model-routing.md"] = moved_routing
+        self.assert_semantic_rejects(self.skill, references)
+
     def test_source_dialect_rejects_html_wrappers_and_angle_autolinks(self) -> None:
         begin = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][0]
         end = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][1]
@@ -204,6 +230,9 @@ class SkillContractTests(unittest.TestCase):
             "> ```\n> ordinary\n> ```\n",
             "    ```\nordinary\n    ```\n",
             "> Extra\n> ---\n",
+            "1) ## Extra\n",
+            "1) > ## Extra\n",
+            "- Extra\n    ---\n",
         )
         for suffix in exact_failures:
             self.assertTrue(VALIDATOR.task_contract_violations(self.task + "\n" + suffix), suffix)
@@ -229,6 +258,12 @@ class SkillContractTests(unittest.TestCase):
             "Setext title\n---",
         ):
             self.assertTrue(VALIDATOR.task_contract_violations(self.task + "\n" + extra), extra)
+
+    def test_source_flags_close_and_preserve_fences(self) -> None:
+        closed = VALIDATOR._source_flags("```\n## Contract\n```\n## Contract\n")
+        self.assertEqual(closed, [False, False, False, True])
+        unclosed = VALIDATOR._source_flags("```\n## Contract\n## References\n")
+        self.assertEqual(unclosed, [False, False, False])
 
     def test_task_contract_h1_and_h2_wrong_order_are_not_sentinels(self) -> None:
         wrong = self.task.replace("## 2. Ownership\n", "## 3. Inputs/evidence\n", 1)

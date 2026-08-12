@@ -218,7 +218,7 @@ def _source_flags(text: str, marker_lines: set[str] | None = None) -> list[bool]
         active = fence is None and not comment
         if fence is not None:
             flags.append(False)
-            if re.match(rf"^ {0,3}{re.escape(fence[0])}{{{fence[1]},}}\s*$", line):
+            if re.match(rf"^[ ]{{0,3}}{re.escape(fence[0])}{{{fence[1]},}}\s*$", line):
                 fence = None
             continue
         if line in marker_lines:
@@ -283,8 +283,17 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     active_section_indexes = [i for i in all_section_indexes if flags[i]]
     if len(all_section_indexes) != 1 or len(active_section_indexes) != 1:
         return [f"{filename} canonical block requires exactly one active, unmasked {section} section"]
-    if active_section_indexes[0] >= begin_index:
+    section_index = active_section_indexes[0]
+    if section_index >= begin_index:
         return [f"{filename} canonical block section must precede its begin marker"]
+    peer_headings = [
+        i
+        for i, line in enumerate(lines)
+        if flags[i] and re.fullmatch(r"#{1,2}[ \t]+.+", line)
+    ]
+    next_peer = next((i for i in peer_headings if i > section_index), None)
+    if next_peer is not None and end_index >= next_peer:
+        return [f"{filename} canonical block must end before the next active H1/H2 section"]
     actual = tuple(lines[begin_index + 1 : end_index])
     if actual != expected:
         errors.append(f"{filename} canonical block contents drifted")
@@ -409,11 +418,11 @@ def _task_heading(line: str) -> tuple[int, str] | None:
 
 
 _ATX_SOURCE_RE = re.compile(
-    r"^(?P<prefix>[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}\.)[ \t]+))*)"
+    r"^(?P<prefix>[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}[.)])[ \t]+))*)"
     r"(?P<marks>#{1,6})(?P<separator>[ \t]+|$)(?P<title>.*)$"
 )
 _SOURCE_PREFIX_RE = re.compile(
-    r"^(?P<prefix>[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}\.)[ \t]+))*)"
+    r"^(?P<prefix>[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}[.)])[ \t]+))*)"
     r"(?P<content>.*)$"
 )
 
@@ -475,7 +484,7 @@ def task_contract_violations(text: str) -> list[str]:
         if not re.fullmatch(r"(?:=+|-+)[ \t]*", content):
             continue
         previous_prefix, previous_content = _source_prefix_parts(lines[index - 1])
-        if prefix == previous_prefix and previous_content.strip():
+        if previous_content.strip():
             errors.append(f"task-contract.md:{index + 1} contains a Setext heading")
     return errors
 
