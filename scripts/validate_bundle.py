@@ -126,6 +126,7 @@ NEGATED_ELLIPTICAL_BASE_RE = re.compile(
 NEGATED_CLAIM_RE = re.compile(r"\b(?:do|does|did)\s+not\s+claim\s+that\b")
 SENSITIVE_ELLIPSIS_START_RE = re.compile(
     r"^(?:they|it|those|these|that|this(?:\s+skill)?|"
+    r"such\s+(?:tasks?|outcomes?)|"
     r"(?:the\s+)?(?:probe|manifest)|"
     r"(?:content|tool|task|timeout|unknown)(?:\s+\w+){0,2})\b"
 )
@@ -136,18 +137,18 @@ SENSITIVE_ELLIPSIS_WORD_RE = re.compile(
 SENSITIVE_ELLIPSIS_AUXILIARY_RE = re.compile(r"\b(?:do|does|did)\b")
 SENSITIVE_ELLIPSIS_PROTECTED_RE: dict[str, re.Pattern[str]] = {
     "App task authorization/opt-in policy is ambiguous or unsafe": re.compile(
-        r"\b(?:authori[sz]\w*|creat\w*|default|opt[-\s]?(?:in|out)|"
-        r"allow\w*|permit\w*|grant\w*|prior|previous|earlier|"
-        r"carried?|carry|forward|inherit\w*|confer\w*|implicit|implied|"
-        r"consent|authorization)\b"
+        r"\b(?:authori[sz]ed|creat\w*|default|suffic\w*|reason\w*|"
+        r"qualif\w*|allow\w*|permit\w*|grant\w*|carried?|carry|"
+        r"forward|inherit\w*|confer\w*|rely|relies|implicit|implied|"
+        r"opt[-\s]?(?:in|out))\b"
     ),
     "Failure-to-Terra/fallback policy is ambiguous or unsafe": re.compile(
-        r"\b(?:terra|fallback|attempt\w*|authori[sz]\w*|suffic\w*|"
-        r"reason\w*|qualif\w*|allow\w*|permit\w*)\b"
+        r"\b(?:attempt\w*|authori[sz]\w*|suffic\w*|reason\w*|"
+        r"qualif\w*|allow\w*|permit\w*|permitted|allowed)\b"
     ),
     "Offline-to-runtime/native conformance policy is ambiguous or unsafe": re.compile(
-        r"\b(?:live|native|runtime|conformance|behavior|behaviour|proof|"
-        r"prove\w*|establish\w*|confirm\w*|guarantee\w*)\b"
+        r"\b(?:proof|prove\w*|establish\w*|confirm\w*|guarantee\w*|"
+        r"proven|established|confirmed|guaranteed)\b"
     ),
     "Skill authority over model/permissions/CLI policy is ambiguous or unsafe": re.compile(
         r"\b(?:parent\s+model|permission\w*|availability|automatic\s+cli|"
@@ -155,8 +156,8 @@ SENSITIVE_ELLIPSIS_PROTECTED_RE: dict[str, re.Pattern[str]] = {
         r"confer\w*|bypass\w*)\b"
     ),
     "Probe/manifest/App evidence for effective route is ambiguous or unsafe": re.compile(
-        r"\b(?:probe|manifest|effective\s+(?:native\s+)?route|route|"
-        r"prove\w*|establish\w*|confirm\w*|guarantee\w*)\b"
+        r"\b(?:prove\w*|establish\w*|confirm\w*|guarantee\w*|"
+        r"proven|established|confirmed|guaranteed)\b"
     ),
 }
 
@@ -369,7 +370,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
 # intentionally bounded policy, not general natural-language inference.
 SENSITIVE_NEGATION_RE = re.compile(
     r"\b(?:no|neither|nor|not|never|cannot|can't|may\s+not|will\s+not|"
-    r"does\s+not|doesn't|do\s+not|don't|must\s+not|should\s+not)\b"
+    r"does\s+not|doesn't|do\s+not|don't|must\s+not|should\s+not)\b|"
+    r"(?:不是|不得|不把|不可|不能|不会|没有|除非)"
 )
 DOUBLE_NEGATION_RE = re.compile(
     r"\b(?:do\s+not|does\s+not|did\s+not|doesn't|don't|never|not|cannot|can't|"
@@ -584,20 +586,22 @@ def sensitive_contract_violations(texts: tuple[str, ...]) -> list[str]:
     for text in texts:
         lines, _ = _unfenced_lines(text)
         rendered_text = _strip_inline_code_for_contract("\n".join(lines))
-        clauses = _contract_clauses(rendered_text)
-        for index, clause in enumerate(clauses):
-            previous_clause = clauses[index - 1] if index else None
-            for policy in SENSITIVE_CONTRACT_POLICIES:
-                for fragment in _contract_sensitive_fragments(
-                    clause, policy, previous_clause
-                ):
-                    if policy.subject.search(fragment) and policy.action.search(fragment):
-                        if not _sensitive_clause_is_legal(fragment, policy):
-                            if policy.label not in violations:
-                                violations.append(policy.label)
-                            break
-                if policy.label in violations:
-                    break
+        paragraphs = re.split(r"\n[ \t]*\n", rendered_text)
+        for paragraph in paragraphs:
+            clauses = _contract_clauses(paragraph)
+            for index, clause in enumerate(clauses):
+                previous_clause = clauses[index - 1] if index else None
+                for policy in SENSITIVE_CONTRACT_POLICIES:
+                    for fragment in _contract_sensitive_fragments(
+                        clause, policy, previous_clause
+                    ):
+                        if policy.subject.search(fragment) and policy.action.search(fragment):
+                            if not _sensitive_clause_is_legal(fragment, policy):
+                                if policy.label not in violations:
+                                    violations.append(policy.label)
+                                break
+                    if policy.label in violations:
+                        break
     return violations
 REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
@@ -656,6 +660,57 @@ def _raw_html_pending_prefix(line: str) -> str | None:
     return None
 
 
+def _mask_raw_html_ignored_line(
+    line: str,
+    inline_code_length: int | None,
+    comment_active: bool,
+) -> tuple[str, int | None, bool]:
+    """Mask inline code, comments, and escaped ``<`` before raw-tag checks."""
+
+    escaped = _escaped_character_flags(line)
+    masked: list[str] = []
+    index = 0
+    while index < len(line):
+        if comment_active:
+            close = line.find("-->", index)
+            if close < 0:
+                masked.extend(" " for _ in line[index:])
+                return "".join(masked), inline_code_length, True
+            masked.extend(" " for _ in line[index : close + 3])
+            index = close + 3
+            comment_active = False
+            continue
+        if inline_code_length is not None:
+            run = "`" * inline_code_length
+            if line.startswith(run, index) and not escaped[index]:
+                masked.extend(" " for _ in run)
+                index += inline_code_length
+                inline_code_length = None
+            else:
+                masked.append(" ")
+                index += 1
+            continue
+        if line.startswith("<!--", index) and not escaped[index]:
+            masked.extend(" " for _ in "<!--")
+            index += 4
+            comment_active = True
+            continue
+        if line[index] == "`" and not escaped[index]:
+            run_end = index + 1
+            while run_end < len(line) and line[run_end] == "`":
+                run_end += 1
+            inline_code_length = run_end - index
+            masked.extend(" " for _ in line[index:run_end])
+            index = run_end
+            continue
+        if line[index] == "<" and escaped[index]:
+            masked.append(" ")
+        else:
+            masked.append(line[index])
+        index += 1
+    return "".join(masked), inline_code_length, comment_active
+
+
 def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
     """Detect same-line and soft-break raw HTML, ignoring rendered code blocks."""
 
@@ -663,6 +718,8 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
     fence_char: str | None = None
     fence_length = 0
     pending: str | None = None
+    inline_code_length: int | None = None
+    comment_active = False
 
     def add_all(items: list[str]) -> None:
         for item in items:
@@ -675,20 +732,28 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
             if _fence_closes(line, fence_char, fence_length):
                 fence_char = None
                 fence_length = 0
+                inline_code_length = None
+                comment_active = False
             continue
         marker = _line_fence_marker(line)
         if marker is not None:
             pending = None
             fence_char, fence_length = marker
+            inline_code_length = None
+            comment_active = False
+            continue
+        masked, inline_code_length, comment_active = _mask_raw_html_ignored_line(
+            line, inline_code_length, comment_active
+        )
+        if pending is not None:
+            combined = pending + "\n" + masked
+            add_all(_raw_html_diagnostics(combined))
+            pending = _raw_html_pending_prefix(combined)
             continue
         if _is_indented_code_line(line):
-            pending = None
             continue
-        if pending is not None:
-            add_all(_raw_html_diagnostics(pending + "\n" + line))
-            pending = None
-        add_all(_raw_html_diagnostics(line))
-        pending = _raw_html_pending_prefix(line)
+        add_all(_raw_html_diagnostics(masked))
+        pending = _raw_html_pending_prefix(masked)
 
     if pending is not None:
         if re.match(r"<\s*/?\s*a\b", pending, re.IGNORECASE):
@@ -742,6 +807,7 @@ def _is_indented_code_line(line: str) -> bool:
 
 
 LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|\d+[.)])[ \t]+(.*)$")
+LIST_ITEM_FULL_RE = re.compile(r"^( *)([-+*]|\d+[.)])([ \t]+)(.*)$")
 MAX_CONTAINER_PREFIX_DEPTH = 16
 
 
@@ -788,69 +854,103 @@ def _container_normalized_lines(text: str) -> list[str]:
 
 
 def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], list[str]]:
-    """Normalize nested containers and fail closed when the bounded parser is exhausted."""
+    """Normalize containers using each marker's actual content-start column."""
 
     normalized: list[str] = []
     diagnostics: list[str] = []
-    continuation_indents: list[int] = []
+    # Entries are (marker-start column, content-start column).  Keeping both
+    # columns makes compact two-space nesting and wide ordered markers
+    # deterministic without assuming a four-space list width.
+    list_stack: list[tuple[int, int]] = []
+
     for raw_line in text.splitlines():
-        line, list_marker_indent, list_count, depth_exhausted = _peel_container_prefixes_details(
-            raw_line
-        )
+        _, _, _, depth_exhausted = _peel_container_prefixes_details(raw_line)
         if depth_exhausted:
             diagnostics.append("container prefix depth exceeded in Markdown line")
-        if list_count:
-            base_indent = (list_marker_indent or 0) + 4
-            continuation_indents = [
-                base_indent + 4 * index for index in range(list_count)
-            ]
+
+        line, blockquote_count = _strip_blockquote_prefixes(raw_line)
+        list_match = LIST_ITEM_FULL_RE.match(line)
+        if list_match is not None and _accept_list_marker(
+            len(list_match.group(1)), list_stack, diagnostics
+        ):
+            marker_start = len(list_match.group(1))
+            content_start = list_match.start(4)
+            while list_stack and list_stack[-1][0] > marker_start:
+                list_stack.pop()
+            if list_stack and list_stack[-1][0] == marker_start:
+                list_stack.pop()
+            list_stack.append((marker_start, content_start))
+            content, _, _, content_exhausted = _peel_container_prefixes_details(
+                list_match.group(4)
+            )
+            if content_exhausted:
+                diagnostics.append("container prefix depth exceeded in Markdown line")
+            normalized.append(content)
+            continue
+
+        if not line.strip():
             normalized.append(line)
             continue
 
-        if continuation_indents and line.strip():
-            leading_spaces = len(line) - len(line.lstrip(" "))
+        leading_spaces = len(line) - len(line.lstrip(" "))
+        candidate_index = -1
+        if list_stack:
             if line.startswith("\t"):
-                candidate_index = len(continuation_indents) - 1
-                candidate = line[1:]
-                candidate_indent = continuation_indents[candidate_index]
+                candidate_index = len(list_stack) - 1
+                candidate_indent = list_stack[candidate_index][1]
             else:
-                candidate_index = next(
+                candidate_index = max(
                     (
                         index
-                        for index in range(len(continuation_indents) - 1, -1, -1)
-                        if leading_spaces >= continuation_indents[index]
+                        for index, (_, content_start) in enumerate(list_stack)
+                        if leading_spaces >= content_start
                     ),
-                    -1,
+                    default=-1,
                 )
                 candidate_indent = (
-                    continuation_indents[candidate_index]
-                    if candidate_index >= 0
-                    else -1
+                    list_stack[candidate_index][1] if candidate_index >= 0 else -1
                 )
-                candidate = line[candidate_indent:] if candidate_index >= 0 else line
             if candidate_index >= 0:
-                continuation, nested_list_indent, nested_count, nested_exhausted = (
-                    _peel_container_prefixes_details(candidate)
-                )
-                if nested_exhausted:
+                candidate = line[1:] if line.startswith("\t") else line[candidate_indent:]
+                content, _, _, content_exhausted = _peel_container_prefixes_details(candidate)
+                if content_exhausted:
                     diagnostics.append("container prefix depth exceeded in Markdown line")
-                if nested_count:
-                    nested_base = candidate_indent + 4
-                    continuation_indents = continuation_indents[: candidate_index + 1]
-                    continuation_indents.extend(
-                        nested_base + 4 * index for index in range(nested_count)
-                    )
-                else:
-                    continuation_indents = continuation_indents[: candidate_index + 1]
-                normalized.append(continuation)
+                list_stack = list_stack[: candidate_index + 1]
+                normalized.append(content)
                 continue
-            continuation_indents = []
-        elif not line.strip():
-            normalized.append(line)
-            continue
-        continuation_indents = []
+            if leading_spaces and blockquote_count == 0:
+                diagnostics.append("ambiguous list continuation indentation")
+            list_stack = []
+
+        # A blockquote is a rendered container even when it follows a list;
+        # top-level four-space and tab-indented lines remain code.
         normalized.append(line)
     return normalized, diagnostics
+
+
+def _strip_blockquote_prefixes(line: str) -> tuple[str, int]:
+    current = line
+    count = 0
+    while count < MAX_CONTAINER_PREFIX_DEPTH:
+        blockquote = re.match(r"^ {0,3}>[ \t]?", current)
+        if blockquote is None:
+            break
+        current = current[blockquote.end() :]
+        count += 1
+    return current, count
+
+
+def _accept_list_marker(
+    marker_start: int,
+    list_stack: list[tuple[int, int]],
+    diagnostics: list[str],
+) -> bool:
+    if not list_stack:
+        return marker_start <= 3
+    parent_marker, parent_content = list_stack[-1]
+    if marker_start > parent_marker and marker_start < parent_content:
+        diagnostics.append("ambiguous list marker indentation")
+    return marker_start == 0 or marker_start >= parent_content
 
 
 def _peel_container_prefixes(line: str) -> tuple[str, int | None]:

@@ -470,7 +470,10 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out, and rely on authorization from prior requests.",
             "App tasks are not opt-out. They inherit authorization from prior requests.",
             "App tasks are not opt-out, although those tasks can rely on prior authorization.",
+            "App tasks are not opt-out. Such tasks are authorized by prior requests.",
+            "App tasks are not opt-out. Such tasks are created by default.",
             "Content failures do not authorize Terra fallback, but tool failures do.",
+            "Content failures do not authorize Terra fallback. Such outcomes are sufficient reasons for Terra.",
             "The manifest does not prove the effective route, while the probe does.",
         )
         for addition in rejected:
@@ -494,6 +497,9 @@ class SkillContractTests(unittest.TestCase):
             "The manifest does not prove the effective route. The probe does not prove the effective route.",
             "App tasks are not opt-out. The weather is clear.",
             "App tasks are not opt-out. They are documented. They inherit authorization from prior requests.",
+            "App tasks are not opt-out. Such tasks are documented in the authorization appendix.",
+            "App tasks are not opt-out. They are documented in the authorization appendix.",
+            "App tasks are not opt-out.\n\nSuch tasks are created by default.",
         )
         for addition in accepted:
             with self.subTest(addition=addition):
@@ -785,6 +791,9 @@ class SkillContractTests(unittest.TestCase):
             )
 
         nested_container_links = (
+            "- item\n  - nested\n    [Nested](model-routing.md)\n",
+            "100. item\n     2. nested\n        [Nested](model-routing.md)\n",
+            "10. item\n    100. nested\n         [Nested](model-routing.md)\n",
             "- item\n    - nested\n        [Nested](model-routing.md)\n",
             "- item\n    1. nested\n        [Nested](model-routing.md)\n",
             "- item\n    - nested\n        > [Nested](model-routing.md)\n",
@@ -803,6 +812,17 @@ class SkillContractTests(unittest.TestCase):
                         VALIDATOR.reference_topology_violations(self.skill, nested_map, SKILL_PATH),
                         [],
                     )
+
+        ambiguous_list = "10. item\n  - ambiguous\n    [Nested](model-routing.md)\n"
+        ambiguous_scan = VALIDATOR._scan_rendered_markdown_details(ambiguous_list)
+        self.assertTrue(any("ambiguous list" in item for item in ambiguous_scan.diagnostics))
+        ambiguous_map = dict(self.references)
+        ambiguous_map["workflow.md"] += ambiguous_list
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, ambiguous_map, SKILL_PATH),
+                [],
+            )
 
         deep_blockquote = "> " * 17 + "[Nested](model-routing.md)\n"
         deep_scan = VALIDATOR._scan_rendered_markdown_details(deep_blockquote)
@@ -853,13 +873,51 @@ class SkillContractTests(unittest.TestCase):
         multiline_raw_html = '<a\n href="model-routing.md">nested</a>\n'
         multiline_raw_scan = VALIDATOR._scan_rendered_markdown_details(multiline_raw_html)
         self.assertTrue(any("raw HTML link" in item for item in multiline_raw_scan.diagnostics))
+        multiline_raw_html_indented = '<a\n    href="model-routing.md">nested</a>\n'
+        self.assertTrue(
+            any(
+                "raw HTML link" in item
+                for item in VALIDATOR._scan_rendered_markdown_details(
+                    multiline_raw_html_indented
+                ).diagnostics
+            )
+        )
+        uppercase_raw_html = '<A\n HREF="model-routing.md">nested</A>\n'
+        self.assertTrue(
+            any(
+                "raw HTML link" in item
+                for item in VALIDATOR._scan_rendered_markdown_details(uppercase_raw_html).diagnostics
+            )
+        )
         multiline_raw_map = dict(self.references)
-        multiline_raw_map["workflow.md"] += multiline_raw_html
+        multiline_raw_map["workflow.md"] += multiline_raw_html_indented
         with self.assertRaises(AssertionError):
             self.assertEqual(
                 VALIDATOR.reference_topology_violations(self.skill, multiline_raw_map, SKILL_PATH),
                 [],
             )
+        inline_code_html = "`<h2 id=\"extra\">ignored</h2>`\n"
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details(inline_code_html).diagnostics,
+            [],
+        )
+        comment_html = "<!-- <h2 id=\"extra\">ignored</h2> -->\n<!--\n<a href=\"model-routing.md\">ignored</a>\n-->\n"
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details(comment_html).diagnostics,
+            [],
+        )
+        escaped_anchor = r'\<a href="model-routing.md">escaped'
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details(escaped_anchor).diagnostics,
+            [],
+        )
+        even_escaped_anchor = r'\\<a href="model-routing.md">interpreted'
+        self.assertTrue(
+            any(
+                "raw HTML link" in item
+                for item in VALIDATOR._scan_rendered_markdown_details(even_escaped_anchor).diagnostics
+            )
+        )
         self.assertEqual(
             VALIDATOR._scan_rendered_markdown_details("```markdown\n<a\n href=\"model-routing.md\">\n```\n").diagnostics,
             [],
@@ -1039,6 +1097,7 @@ class SkillContractTests(unittest.TestCase):
             "> - > ## Extra\n",
             "- > Heading\n  > ---\n",
             "- item\n    - nested\n        ## Extra\n",
+            "- item\n  - nested\n    ## Extra\n",
             "- item\n    1. nested\n        ### Extra\n",
             "- item\n    - nested\n        > ## Extra\n",
         )
@@ -1059,8 +1118,18 @@ class SkillContractTests(unittest.TestCase):
         )
         multiline_raw_heading = packet + '\n<h2\n id="extra">Extra</h2>\n'
         self.assertTrue(VALIDATOR.task_contract_violations(multiline_raw_heading))
+        multiline_raw_heading_indented = packet + '\n<h2\n    id="extra">Extra</h2>\n'
+        self.assertTrue(VALIDATOR.task_contract_violations(multiline_raw_heading_indented))
         self.assertEqual(
             VALIDATOR.task_contract_violations("```markdown\n<h2\n id=\"extra\">\n```\n" + packet),
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + '\n`<h2 id="extra">ignored</h2>`\n'),
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + '\n<!--\n<h2 id="extra">ignored</h2>\n-->\n'),
             [],
         )
         self.assertEqual(
