@@ -379,6 +379,9 @@ class SkillContractTests(unittest.TestCase):
         rejected = (
             "App tasks are opt-out rather than opt-in.",
             "App task creation may use authorization carried over from an earlier request.",
+            "App tasks are not opt-out. They are authorized by previous requests.",
+            "App tasks are not opt-out. Those tasks are created by default.",
+            "Content failures do not authorize Terra fallback. They are sufficient reasons for Terra.",
             "App tasks are not opt-out while App tasks may rely on authorization carried over from an earlier request.",
             "When content fails, fall back to Terra.",
             "A timeout is sufficient reason to attempt Terra.",
@@ -410,6 +413,8 @@ class SkillContractTests(unittest.TestCase):
             "Neither content failures nor tool failures authorize Terra fallback.",
             "Content failures do not authorize Terra fallback and tool failures do not authorize Terra fallback.",
             "App tasks are not opt-out.",
+            "App tasks are not opt-out. It may rain tomorrow.",
+            "App tasks are not opt-out. They are documented.",
             "This Skill does not change the parent model.",
             "Content failures do not authorize Terra fallback.",
         )
@@ -779,6 +784,37 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+        nested_container_links = (
+            "- item\n    - nested\n        [Nested](model-routing.md)\n",
+            "- item\n    1. nested\n        [Nested](model-routing.md)\n",
+            "- item\n    - nested\n        > [Nested](model-routing.md)\n",
+            "- item\n    1. nested\n        - deeper\n            [Nested](model-routing.md)\n",
+        )
+        for nested_links in nested_container_links:
+            with self.subTest(nested_links=nested_links):
+                self.assertEqual(
+                    VALIDATOR.extract_local_markdown_targets(nested_links),
+                    ["model-routing.md"],
+                )
+                nested_map = dict(self.references)
+                nested_map["workflow.md"] += nested_links
+                with self.assertRaises(AssertionError):
+                    self.assertEqual(
+                        VALIDATOR.reference_topology_violations(self.skill, nested_map, SKILL_PATH),
+                        [],
+                    )
+
+        deep_blockquote = "> " * 17 + "[Nested](model-routing.md)\n"
+        deep_scan = VALIDATOR._scan_rendered_markdown_details(deep_blockquote)
+        self.assertTrue(any("container prefix depth exceeded" in item for item in deep_scan.diagnostics))
+        deep_map = dict(self.references)
+        deep_map["workflow.md"] += deep_blockquote
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, deep_map, SKILL_PATH),
+                [],
+            )
+
         percent_encoded = "[nested](./model-routing%2Emd?x=1#y)"
         self.assertEqual(
             VALIDATOR.extract_local_markdown_targets(percent_encoded),
@@ -814,6 +850,24 @@ class SkillContractTests(unittest.TestCase):
                 VALIDATOR.reference_topology_violations(self.skill, raw_html_map, SKILL_PATH),
                 [],
             )
+        multiline_raw_html = '<a\n href="model-routing.md">nested</a>\n'
+        multiline_raw_scan = VALIDATOR._scan_rendered_markdown_details(multiline_raw_html)
+        self.assertTrue(any("raw HTML link" in item for item in multiline_raw_scan.diagnostics))
+        multiline_raw_map = dict(self.references)
+        multiline_raw_map["workflow.md"] += multiline_raw_html
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, multiline_raw_map, SKILL_PATH),
+                [],
+            )
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details("```markdown\n<a\n href=\"model-routing.md\">\n```\n").diagnostics,
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details('    <a\n href="model-routing.md">\n').diagnostics,
+            [],
+        )
         self.assertEqual(
             VALIDATOR._scan_rendered_markdown_details("safe text: 2 < 3 and <angle>").diagnostics,
             [],
@@ -984,6 +1038,9 @@ class SkillContractTests(unittest.TestCase):
             "- 1. ### Extra\n",
             "> - > ## Extra\n",
             "- > Heading\n  > ---\n",
+            "- item\n    - nested\n        ## Extra\n",
+            "- item\n    1. nested\n        ### Extra\n",
+            "- item\n    - nested\n        > ## Extra\n",
         )
         for mutation in container_heading_mutations:
             with self.subTest(container_heading=mutation), self.assertRaises(AssertionError):
@@ -999,6 +1056,12 @@ class SkillContractTests(unittest.TestCase):
         self.assertEqual(VALIDATOR.task_contract_violations(closed_hash_packet), [])
         self.assertTrue(
             VALIDATOR.task_contract_violations(packet + "\n<h2>Extra</h2>\n")
+        )
+        multiline_raw_heading = packet + '\n<h2\n id="extra">Extra</h2>\n'
+        self.assertTrue(VALIDATOR.task_contract_violations(multiline_raw_heading))
+        self.assertEqual(
+            VALIDATOR.task_contract_violations("```markdown\n<h2\n id=\"extra\">\n```\n" + packet),
+            [],
         )
         self.assertEqual(
             VALIDATOR.task_contract_violations(packet + "\nordinary text: 2 < 3\n"),
@@ -1023,6 +1086,10 @@ class SkillContractTests(unittest.TestCase):
         invalid_fence_heading = packet + "\n```bad` info\n### Rendered H3\n"
         with self.assertRaises(AssertionError):
             self.assertEqual(VALIDATOR.task_contract_violations(invalid_fence_heading), [])
+
+        deep_heading = packet + "\n" + "> " * 17 + "## Extra\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(VALIDATOR.task_contract_violations(deep_heading), [])
 
 
 if __name__ == "__main__":

@@ -96,6 +96,9 @@ SENSITIVE_CONNECTOR_RE = re.compile(
 )
 RAW_HTML_LINK_TAG_RE = re.compile(r"<\s*/?\s*a(?:\s|/?>)", re.IGNORECASE)
 RAW_HTML_HEADING_TAG_RE = re.compile(r"<\s*/?\s*h[1-6](?:\s|/?>)", re.IGNORECASE)
+RAW_HTML_TAG_PREFIX_RE = re.compile(
+    r"<\s*/?\s*(?:a|h[1-6])(?:\s|$)", re.IGNORECASE
+)
 HTML_ENTITY_RE = re.compile(r"&(?:#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});", re.IGNORECASE)
 SENSITIVE_PREDICATE_START_RE = re.compile(
     r"^(?:is|are|was|were|may|can|could|will|must|should|do|does|did|"
@@ -130,6 +133,32 @@ SENSITIVE_ELLIPSIS_WORD_RE = re.compile(
     r"\b(?:do|does|did|can|could|may|might|will|would|qualif\w*|"
     r"carr\w*|rely|relies|inherit|inherits|confer|confers)\b"
 )
+SENSITIVE_ELLIPSIS_AUXILIARY_RE = re.compile(r"\b(?:do|does|did)\b")
+SENSITIVE_ELLIPSIS_PROTECTED_RE: dict[str, re.Pattern[str]] = {
+    "App task authorization/opt-in policy is ambiguous or unsafe": re.compile(
+        r"\b(?:authori[sz]\w*|creat\w*|default|opt[-\s]?(?:in|out)|"
+        r"allow\w*|permit\w*|grant\w*|prior|previous|earlier|"
+        r"carried?|carry|forward|inherit\w*|confer\w*|implicit|implied|"
+        r"consent|authorization)\b"
+    ),
+    "Failure-to-Terra/fallback policy is ambiguous or unsafe": re.compile(
+        r"\b(?:terra|fallback|attempt\w*|authori[sz]\w*|suffic\w*|"
+        r"reason\w*|qualif\w*|allow\w*|permit\w*)\b"
+    ),
+    "Offline-to-runtime/native conformance policy is ambiguous or unsafe": re.compile(
+        r"\b(?:live|native|runtime|conformance|behavior|behaviour|proof|"
+        r"prove\w*|establish\w*|confirm\w*|guarantee\w*)\b"
+    ),
+    "Skill authority over model/permissions/CLI policy is ambiguous or unsafe": re.compile(
+        r"\b(?:parent\s+model|permission\w*|availability|automatic\s+cli|"
+        r"cli\s+(?:routing|fallback)|switch\w*|change\w*|grant\w*|"
+        r"confer\w*|bypass\w*)\b"
+    ),
+    "Probe/manifest/App evidence for effective route is ambiguous or unsafe": re.compile(
+        r"\b(?:probe|manifest|effective\s+(?:native\s+)?route|route|"
+        r"prove\w*|establish\w*|confirm\w*|guarantee\w*)\b"
+    ),
+}
 
 
 def _normalize_contract_text(text: str) -> str:
@@ -427,11 +456,14 @@ def _is_sensitive_ellipsis(fragment: str, policy: _SensitiveContractPolicy) -> b
 
     if SENSITIVE_ELLIPSIS_START_RE.match(fragment) is None:
         return False
+    protected = SENSITIVE_ELLIPSIS_PROTECTED_RE.get(policy.label)
+    has_protected_predicate = protected is not None and protected.search(fragment) is not None
+    if has_protected_predicate:
+        return True
     if SENSITIVE_ELLIPSIS_WORD_RE.search(fragment) is None:
         return False
-    return policy.action.search(fragment) is not None or bool(
-        SENSITIVE_ELLIPSIS_WORD_RE.search(fragment)
-    )
+    has_policy_subject = policy.subject.search(fragment) is not None
+    return has_policy_subject and SENSITIVE_ELLIPSIS_AUXILIARY_RE.search(fragment) is not None
 
 
 def _last_policy_action(clause: str, policy: _SensitiveContractPolicy) -> str | None:
@@ -615,6 +647,59 @@ def _raw_html_diagnostics(line: str) -> list[str]:
     return diagnostics
 
 
+def _raw_html_pending_prefix(line: str) -> str | None:
+    """Return a relevant raw-HTML opener that continues past this line."""
+
+    for match in RAW_HTML_TAG_PREFIX_RE.finditer(line):
+        if ">" not in line[match.start() :]:
+            return line[match.start() :]
+    return None
+
+
+def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
+    """Detect same-line and soft-break raw HTML, ignoring rendered code blocks."""
+
+    diagnostics: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    pending: str | None = None
+
+    def add_all(items: list[str]) -> None:
+        for item in items:
+            if item not in diagnostics:
+                diagnostics.append(item)
+
+    for line in lines:
+        if fence_char is not None:
+            pending = None
+            if _fence_closes(line, fence_char, fence_length):
+                fence_char = None
+                fence_length = 0
+            continue
+        marker = _line_fence_marker(line)
+        if marker is not None:
+            pending = None
+            fence_char, fence_length = marker
+            continue
+        if _is_indented_code_line(line):
+            pending = None
+            continue
+        if pending is not None:
+            add_all(_raw_html_diagnostics(pending + "\n" + line))
+            pending = None
+        add_all(_raw_html_diagnostics(line))
+        pending = _raw_html_pending_prefix(line)
+
+    if pending is not None:
+        if re.match(r"<\s*/?\s*a\b", pending, re.IGNORECASE):
+            diagnostics.append("unterminated raw HTML link tag opener")
+        else:
+            diagnostics.append("unterminated raw HTML heading tag opener")
+    if fence_char is not None:
+        diagnostics.append("raw HTML scan encountered an unclosed fenced code block")
+    return diagnostics
+
+
 def _fence_marker_details(line: str) -> tuple[str, int, int] | None:
     indent = 0
     while indent < len(line) and indent < 3 and line[indent] == " ":
@@ -657,6 +742,36 @@ def _is_indented_code_line(line: str) -> bool:
 
 
 LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|\d+[.)])[ \t]+(.*)$")
+MAX_CONTAINER_PREFIX_DEPTH = 16
+
+
+def _container_prefixes_remain(line: str) -> bool:
+    return (
+        re.match(r"^ {0,3}>[ \t]?", line) is not None
+        or LIST_ITEM_RE.match(line) is not None
+    )
+
+
+def _peel_container_prefixes_details(line: str) -> tuple[str, int | None, int, bool]:
+    """Peel bounded CommonMark container prefixes and report depth exhaustion."""
+
+    current = line
+    first_list_indent: int | None = None
+    list_count = 0
+    for _ in range(MAX_CONTAINER_PREFIX_DEPTH):
+        blockquote = re.match(r"^ {0,3}>[ \t]?", current)
+        if blockquote is not None:
+            current = current[blockquote.end() :]
+            continue
+        list_match = LIST_ITEM_RE.match(current)
+        if list_match is not None:
+            if first_list_indent is None:
+                first_list_indent = len(list_match.group(1))
+            list_count += 1
+            current = list_match.group(2)
+            continue
+        break
+    return current, first_list_indent, list_count, _container_prefixes_remain(current)
 
 
 def _container_normalized_lines(text: str) -> list[str]:
@@ -668,51 +783,80 @@ def _container_normalized_lines(text: str) -> list[str]:
     the same container interpretation.
     """
 
+    normalized, _ = _container_normalized_lines_with_diagnostics(text)
+    return normalized
+
+
+def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], list[str]]:
+    """Normalize nested containers and fail closed when the bounded parser is exhausted."""
+
     normalized: list[str] = []
-    list_indent: int | None = None
+    diagnostics: list[str] = []
+    continuation_indents: list[int] = []
     for raw_line in text.splitlines():
-        line, list_marker_indent = _peel_container_prefixes(raw_line)
-        if list_marker_indent is not None:
-            list_indent = list_marker_indent
+        line, list_marker_indent, list_count, depth_exhausted = _peel_container_prefixes_details(
+            raw_line
+        )
+        if depth_exhausted:
+            diagnostics.append("container prefix depth exceeded in Markdown line")
+        if list_count:
+            base_indent = (list_marker_indent or 0) + 4
+            continuation_indents = [
+                base_indent + 4 * index for index in range(list_count)
+            ]
             normalized.append(line)
             continue
 
-        if list_indent is not None and line.strip():
-            if line.startswith("\t"):
-                normalized.append(line[1:])
-                continue
+        if continuation_indents and line.strip():
             leading_spaces = len(line) - len(line.lstrip(" "))
-            continuation_indent = list_indent + 4
-            if leading_spaces >= continuation_indent:
-                continuation, nested_list_indent = _peel_container_prefixes(
-                    line[continuation_indent:]
+            if line.startswith("\t"):
+                candidate_index = len(continuation_indents) - 1
+                candidate = line[1:]
+                candidate_indent = continuation_indents[candidate_index]
+            else:
+                candidate_index = next(
+                    (
+                        index
+                        for index in range(len(continuation_indents) - 1, -1, -1)
+                        if leading_spaces >= continuation_indents[index]
+                    ),
+                    -1,
                 )
-                if nested_list_indent is not None:
-                    list_indent = continuation_indent + nested_list_indent
+                candidate_indent = (
+                    continuation_indents[candidate_index]
+                    if candidate_index >= 0
+                    else -1
+                )
+                candidate = line[candidate_indent:] if candidate_index >= 0 else line
+            if candidate_index >= 0:
+                continuation, nested_list_indent, nested_count, nested_exhausted = (
+                    _peel_container_prefixes_details(candidate)
+                )
+                if nested_exhausted:
+                    diagnostics.append("container prefix depth exceeded in Markdown line")
+                if nested_count:
+                    nested_base = candidate_indent + 4
+                    continuation_indents = continuation_indents[: candidate_index + 1]
+                    continuation_indents.extend(
+                        nested_base + 4 * index for index in range(nested_count)
+                    )
+                else:
+                    continuation_indents = continuation_indents[: candidate_index + 1]
                 normalized.append(continuation)
                 continue
-            list_indent = None
+            continuation_indents = []
+        elif not line.strip():
+            normalized.append(line)
+            continue
+        continuation_indents = []
         normalized.append(line)
-    return normalized
+    return normalized, diagnostics
 
 
 def _peel_container_prefixes(line: str) -> tuple[str, int | None]:
     """Peel bounded blockquote/list prefixes until the line reaches content."""
 
-    current = line
-    first_list_indent: int | None = None
-    for _ in range(16):
-        blockquote = re.match(r"^ {0,3}>[ \t]?", current)
-        if blockquote is not None:
-            current = current[blockquote.end() :]
-            continue
-        list_match = LIST_ITEM_RE.match(current)
-        if list_match is not None:
-            if first_list_indent is None:
-                first_list_indent = len(list_match.group(1))
-            current = list_match.group(2)
-            continue
-        break
+    current, first_list_indent, _, _ = _peel_container_prefixes_details(line)
     return current, first_list_indent
 
 
@@ -905,7 +1049,10 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
     label_is_image = False
     nested_label_reported = False
 
-    for line in _container_normalized_lines(text):
+    lines, container_diagnostics = _container_normalized_lines_with_diagnostics(text)
+    diagnostics.extend(container_diagnostics)
+    diagnostics.extend(_raw_html_diagnostics_for_rendered_lines(lines))
+    for line in lines:
         if fence_marker is not None:
             if label_active:
                 diagnostics.append("link label crosses a fenced code block")
@@ -929,8 +1076,6 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                 label_active = False
                 label_buffer = []
             continue
-        diagnostics.extend(_raw_html_diagnostics(line))
-
         if not label_active:
             definition_diagnostic = _reference_definition_diagnostic(line)
             if definition_diagnostic is not None:
@@ -1145,10 +1290,18 @@ def semantic_contract_violations(
 def _unfenced_lines(text: str) -> tuple[list[str], bool]:
     """Return rendered lines and whether a backtick/tilde fence is unclosed."""
 
+    rendered, unclosed, _ = _unfenced_lines_with_diagnostics(text)
+    return rendered, unclosed
+
+
+def _unfenced_lines_with_diagnostics(text: str) -> tuple[list[str], bool, list[str]]:
+    """Return rendered lines, fence state, and container normalization diagnostics."""
+
     rendered: list[str] = []
     fence_char: str | None = None
     fence_length = 0
-    for line in _container_normalized_lines(text):
+    normalized, container_diagnostics = _container_normalized_lines_with_diagnostics(text)
+    for line in normalized:
         if fence_char is None:
             marker = _line_fence_marker(line)
             if marker is not None:
@@ -1160,13 +1313,13 @@ def _unfenced_lines(text: str) -> tuple[list[str], bool]:
         if _fence_closes(line, fence_char, fence_length):
             fence_char = None
             fence_length = 0
-    return rendered, fence_char is not None
+    return rendered, fence_char is not None, container_diagnostics
 
 
 def task_contract_violations(text: str) -> list[str]:
     """Require exactly five rendered H2 sections and reject Setext headings."""
 
-    lines, unclosed_fence = _unfenced_lines(text)
+    lines, unclosed_fence, container_diagnostics = _unfenced_lines_with_diagnostics(text)
     headings: list[str] = []
     non_h2_headings: list[str] = []
     for line in lines:
@@ -1190,13 +1343,11 @@ def task_contract_violations(text: str) -> list[str]:
         violations.append(f"task-contract must not contain rendered H3-H6 headings: {non_h2_headings}")
     if unclosed_fence:
         violations.append("task-contract contains an unclosed fenced code block")
+    violations.extend(container_diagnostics)
     if any(_invalid_backtick_fence_opener(line) for line in lines):
         violations.append("task-contract contains an invalid backtick fence opener")
-    for line in lines:
-        if _is_indented_code_line(line):
-            continue
-        for diagnostic in _raw_html_diagnostics(line):
-            violations.append(f"task-contract contains unsupported raw HTML: {diagnostic}")
+    for diagnostic in _raw_html_diagnostics_for_rendered_lines(lines):
+        violations.append(f"task-contract contains unsupported raw HTML: {diagnostic}")
 
     for index, line in enumerate(lines[:-1]):
         if (
