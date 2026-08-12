@@ -143,6 +143,15 @@ def add_extra_schema_field(source: str, field: str) -> str:
     return source[: match.end()] + "EXTRA_SCHEMA_FIELD: injected\n" + source[match.end() :]
 
 
+def mutate_exact_schema_line(source: str, expected: str, replacement: str | None) -> str:
+    pattern = rf"(?m)^(?P<indent>[ \t]*){re.escape(expected)}[ \t]*$"
+    replacement_line = "" if replacement is None else rf"\g<indent>{replacement}"
+    candidate, count = re.subn(pattern, replacement_line, source, count=1)
+    if count != 1:
+        raise AssertionError(f"exact schema-line mutation anchor is absent: {expected!r}")
+    return candidate
+
+
 class AgentContractTests(unittest.TestCase):
     def materialize(
         self,
@@ -753,6 +762,78 @@ class AgentContractTests(unittest.TestCase):
                 self.assertNotEqual(candidate, source)
                 self.assertEqual(self.errors_for(filename, candidate), [], insertion)
 
+    def test_registered_separator_and_checkbox_variants_are_closed(self) -> None:
+        cases = (
+            (
+                "architect.toml",
+                "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n",
+                "Unrelated completed prose; This role may edit repository files.\n",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n",
+                "Unrelated completed prose:This role may edit repository files.\n",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n",
+                "- [x] This role may expose secrets!\n",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n",
+                "- [X] This role may expose secrets.\n",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n",
+                "- [ ] This role may expose secrets.\n",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "Read and search the relevant repository, edit assigned files using repository\n",
+                "Unrelated completed prose — This role may edit product code outside owned paths.\n",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "docs_researcher_luna.toml",
+                "Inspect assigned repository and local documentation, and use bounded read-only search\n",
+                "Unrelated completed prose: Content, task, or tool failure authorizes route switching.\n",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+            (
+                "docs_researcher_terra.toml",
+                "Inspect assigned repository and local documentation, and use bounded read-only search\n",
+                "Unrelated completed prose: Content, task, or tool failure authorizes route switching.\n",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+        )
+        for filename, context_anchor, insertion, diagnostic in cases:
+            with self.subTest(role=filename, insertion=insertion):
+                source = AGENT_SOURCES[filename]
+                self.assertEqual(source.count(context_anchor), 1)
+                candidate = source.replace(context_anchor, context_anchor + insertion, 1)
+                self.assertNotEqual(candidate, source)
+                self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+        benign = (
+            "Never state: This role may expose secrets.\n",
+            "Never state：This role may expose secrets.\n",
+            "Do not say; - This role may expose secrets.\n",
+        )
+        source = AGENT_SOURCES["architect.toml"]
+        context_anchor = "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n"
+        for insertion in benign:
+            with self.subTest(benign=insertion):
+                candidate = source.replace(context_anchor, context_anchor + insertion, 1)
+                self.assertNotEqual(candidate, source)
+                self.assertEqual(self.errors_for("architect.toml", candidate), [], insertion)
+
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
         source = AGENT_SOURCES[filename]
@@ -809,6 +890,28 @@ class AgentContractTests(unittest.TestCase):
                 with self.subTest(role=name, mutation=mutation):
                     self.assertNotEqual(candidate, AGENT_SOURCES[filename])
                     self.assert_diagnostic(self.errors_for(filename, candidate), expected)
+
+    def test_every_registered_exact_safety_line_rejects_suffix_replacement_and_deletion(self) -> None:
+        for name, registered in VALIDATOR.ROLE_CONTRACT_ANCHORS.items():
+            filename = f"{name}.toml"
+            source = AGENT_SOURCES[filename]
+            for expected in registered.get("exact_schema_lines", ()):
+                field, _, value = expected.partition(":")
+                replacement = f"{field}: MUTATED_VALUE" if value else f"{expected} MUTATED_VALUE"
+                mutations = (
+                    ("suffix widening", expected + " MUTATED_SUFFIX"),
+                    ("replacement", replacement),
+                    ("deletion", None),
+                )
+                for mutation, replacement_line in mutations:
+                    with self.subTest(role=name, line=expected, mutation=mutation):
+                        candidate = mutate_exact_schema_line(source, expected, replacement_line)
+                        self.assertNotEqual(candidate, source)
+                        self.assert_diagnostic(
+                            self.errors_for(filename, candidate),
+                            "structured handoff schema line is not exact",
+                        )
+                        self.assert_diagnostic(self.errors_for(filename, candidate), expected)
 
     def test_reviewer_verdict_enum_cannot_be_widened(self) -> None:
         source = AGENT_SOURCES["reviewer.toml"]

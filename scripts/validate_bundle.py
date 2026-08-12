@@ -71,6 +71,42 @@ READ_ONLY_AGENTS = frozenset(
 )
 WRITER_AGENTS = frozenset({"implementer", "performance_profiler", "tester"})
 
+# These are the complete physical lines whose values close a safety-relevant
+# handoff contract.  They are source registrations, not hashes: surrounding
+# explanatory prose remains flexible, while enum/status/verdict and researcher
+# route/audit values cannot be widened by suffixes or weakened replacements.
+RESEARCH_STATUS_FAILURE_MATRIX_LINES = (
+    "COMPLETE + NONE: valid; COMPLETE iff FAILURE_CLASS=NONE.",
+    "STOP_UNVERIFIED + ROUTE_METADATA_MISSING, ROUTE_METADATA_CONFLICT, or UNKNOWN_EXCEPTION: valid.",
+    "STOP_FAILED + TASK_FAILURE: valid.",
+    "STOP_FAILED + TIMEOUT: valid only when effective route metadata is complete and non-conflicting.",
+    "STOP_UNVERIFIED + TIMEOUT: valid when effective route metadata is missing, conflicting, or unobservable; metadata uncertainty has priority.",
+    "All other STATUS/FAILURE_CLASS combinations are invalid.",
+)
+RESEARCH_STATUS_FAILURE_SCHEMA_LINES = (
+    "STATUS_FAILURE_MATRIX:",
+    *RESEARCH_STATUS_FAILURE_MATRIX_LINES,
+    "STATUS: COMPLETE | STOP_FAILED | STOP_UNVERIFIED; COMPLETE only when evidence supports the claims.",
+    "FAILURE_CLASS: NONE | NATIVE_ROUTING_FAILURE | ROUTE_METADATA_MISSING | ROUTE_METADATA_CONFLICT | TASK_FAILURE | TIMEOUT | UNKNOWN_EXCEPTION.",
+)
+RESEARCH_REPORT_SCOPE_LINE = (
+    "REPORT_SCOPE: Observed or returnable child report after a child attempt exists; "
+    "a pre-spawn native rejection is parent-owned raw evidence and has no child handoff."
+)
+
+
+def _researcher_exact_schema_lines(
+    requested_route: str, native_failure_line: str, route_authority: str
+) -> tuple[str, ...]:
+    return (
+        f"REQUESTED_ROUTE: {requested_route}",
+        "OBSERVED_ROUTE: Observed native route, or unknown when unobserved.",
+        RESEARCH_REPORT_SCOPE_LINE,
+        *RESEARCH_STATUS_FAILURE_SCHEMA_LINES,
+        native_failure_line,
+        f"ROUTE_AUTHORITY: {route_authority}",
+    )
+
 # These are deliberately closed contradictory literals. They catch explicit
 # permissions or claims that would override a registered prohibition without
 # attempting a general natural-language polarity or intent classifier. Punctuation
@@ -373,6 +409,9 @@ ROLE_CONTRACT_ANCHORS = {
             "EVIDENCE",
             "SANDBOX",
         ),
+        "exact_schema_lines": (
+            "CONFIDENCE: High, medium, or low per material path, with basis.",
+        ),
     },
     "docs_researcher_luna": {
         "evidence": (
@@ -397,6 +436,11 @@ ROLE_CONTRACT_ANCHORS = {
             "FAILURE_CLASS",
             "ROUTE_AUTHORITY",
             "SANDBOX",
+        ),
+        "exact_schema_lines": _researcher_exact_schema_lines(
+            "Luna/Max",
+            "STOP_FAILED + NATIVE_ROUTING_FAILURE: valid for an observed child handoff. For Luna, only the parent state machine may use the parent-owned evidence/classification to promote the overall chain to FALLBACK_PENDING; this child never spawns or authorizes Terra, fallback, or route switching.",
+            "Evidence and classification only; this role does not spawn or authorize Terra, fallback, or route switching.",
         ),
     },
     "docs_researcher_terra": {
@@ -423,6 +467,11 @@ ROLE_CONTRACT_ANCHORS = {
             "ROUTE_AUTHORITY",
             "SANDBOX",
         ),
+        "exact_schema_lines": _researcher_exact_schema_lines(
+            "Terra/high",
+            "STOP_FAILED + NATIVE_ROUTING_FAILURE: valid for an observed child handoff. For Terra, this is terminal STOP_FAILED and never promotes or authorizes fallback or a route switch.",
+            "Evidence and classification only; this role does not spawn or authorize any further fallback or route switch.",
+        ),
     },
     "gpu_reviewer": {
         "evidence": ("correctness evidence separately from performance evidence",),
@@ -439,6 +488,9 @@ ROLE_CONTRACT_ANCHORS = {
             "VERDICT",
             "EVIDENCE",
             "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP, FIX_FIRST, or RETHINK with basis.",
         ),
     },
     "implementer": {
@@ -458,6 +510,9 @@ ROLE_CONTRACT_ANCHORS = {
             "OUT_OF_SCOPE",
             "STATUS",
         ),
+        "exact_schema_lines": (
+            "STATUS: READY_FOR_PARENT_REVIEW or STOP_ESCALATE.",
+        ),
     },
     "numerics_reviewer": {
         "evidence": ("convergence tables, conservation residuals, and repeated-run results",),
@@ -475,6 +530,9 @@ ROLE_CONTRACT_ANCHORS = {
             "VERDICT",
             "EVIDENCE",
             "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP, FIX_FIRST, or RETHINK with basis.",
         ),
     },
     "parallelism_reviewer": {
@@ -496,6 +554,9 @@ ROLE_CONTRACT_ANCHORS = {
             "EVIDENCE",
             "SANDBOX",
         ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP, FIX_FIRST, or RETHINK with basis.",
+        ),
     },
     "performance_profiler": {
         "evidence": (
@@ -515,6 +576,9 @@ ROLE_CONTRACT_ANCHORS = {
             "GAPS",
             "STATUS",
             "EVIDENCE",
+        ),
+        "exact_schema_lines": (
+            "STATUS: READY_FOR_PARENT_REVIEW or STOP_ESCALATE.",
         ),
     },
     "reviewer": {
@@ -552,6 +616,9 @@ ROLE_CONTRACT_ANCHORS = {
             "EVIDENCE",
             "SANDBOX",
         ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP | FIX_FIRST | RETHINK",
+        ),
     },
     "test_validator": {
         "evidence": ("mapped path and false-positive analysis for every material requirement",),
@@ -567,6 +634,9 @@ ROLE_CONTRACT_ANCHORS = {
             "VERDICT",
             "EVIDENCE",
             "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SUPPORTED, GAPS, or STOP_UNVERIFIED with basis.",
         ),
     },
     "tester": {
@@ -587,20 +657,18 @@ ROLE_CONTRACT_ANCHORS = {
             "STATUS",
             "EVIDENCE",
         ),
+        "exact_schema_lines": (
+            "FAILURE_CLASSIFICATION: Implementation, environment, flaky, pre-existing, or inconclusive.",
+            "STATUS: READY_FOR_PARENT_REVIEW or STOP_ESCALATE.",
+        ),
     },
 }
 
 RESEARCH_STATUS_FAILURE_ANCHORS = (
-    "COMPLETE + NONE: valid; COMPLETE iff FAILURE_CLASS=NONE.",
-    "STOP_UNVERIFIED + ROUTE_METADATA_MISSING, ROUTE_METADATA_CONFLICT, or UNKNOWN_EXCEPTION: valid.",
-    "STOP_FAILED + TASK_FAILURE: valid.",
-    "STOP_FAILED + TIMEOUT: valid only when effective route metadata is complete and non-conflicting.",
-    "STOP_UNVERIFIED + TIMEOUT: valid when effective route metadata is missing, conflicting, or unobservable; metadata uncertainty has priority.",
-    "STOP_FAILED + NATIVE_ROUTING_FAILURE: valid for an observed child handoff.",
-    "All other STATUS/FAILURE_CLASS combinations are invalid.",
-    "STATUS: COMPLETE | STOP_FAILED | STOP_UNVERIFIED; COMPLETE only when evidence supports the claims.",
-    "FAILURE_CLASS: NONE | NATIVE_ROUTING_FAILURE | ROUTE_METADATA_MISSING | ROUTE_METADATA_CONFLICT | TASK_FAILURE | TIMEOUT | UNKNOWN_EXCEPTION.",
-    "REPORT_SCOPE: Observed or returnable child report after a child attempt exists; a pre-spawn native rejection is parent-owned raw evidence and has no child handoff.",
+    *RESEARCH_STATUS_FAILURE_MATRIX_LINES,
+    RESEARCH_STATUS_FAILURE_SCHEMA_LINES[-2],
+    RESEARCH_STATUS_FAILURE_SCHEMA_LINES[-1],
+    RESEARCH_REPORT_SCOPE_LINE,
 )
 RUNTIME_RECORD_FIXTURES = {
     "app-task.json",
@@ -748,10 +816,15 @@ def _require_anchor(
 
 
 def _require_exact_schema_line(
-    errors: list[str], label: str, section_text: str, expected_line: str
+    errors: list[str],
+    label: str,
+    section_text: str,
+    expected_line: str,
+    diagnostic: str = "structured handoff schema line is not exact",
 ) -> None:
-    if not any(line.strip() == expected_line for line in section_text.splitlines()):
-        errors.append(f"{label}: structured handoff schema line is not exact: {expected_line}")
+    count = sum(line.strip() == expected_line for line in section_text.splitlines())
+    if count != 1:
+        errors.append(f"{label}: {diagnostic}: {expected_line}")
 
 
 def _operational_text(sections: Mapping[str, str]) -> str:
@@ -808,7 +881,11 @@ REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS = (
     (("quote",), (":", "：", ";")),
     (("example",), (":", "：", ";")),
 )
-REGISTERED_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)")
+REGISTERED_LIST_MARKER_RE = re.compile(
+    r"^\s*(?:[-*+]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)"
+    r"(?:\[[ xX]\](?:[ \t]+|$))?"
+)
+REGISTERED_SEPARATOR_RE = re.compile(r"[:：;—–]")
 
 
 def _strip_registered_list_marker(line: str) -> str:
@@ -829,6 +906,30 @@ def _registered_neutral_label_remainder(text: str) -> tuple[str, ...] | None:
         if remainder:
             return remainder
     return None
+
+
+def _registered_separator_remainders(text: str) -> tuple[tuple[str, ...], ...]:
+    """Return direct candidates after registered punctuation separators.
+
+    This is a closed tokenizer rule: a suffix is considered independently so
+    a completed, unrelated prefix cannot hide a registered direct clause. An
+    exact negating/quoted introducer keeps its immediate suffix quoted instead.
+    """
+    stripped = _strip_registered_list_marker(text)
+    remainders: list[tuple[str, ...]] = []
+    for match in REGISTERED_SEPARATOR_RE.finditer(stripped):
+        prefix = stripped[: match.start()].strip()
+        delimiter = match.group(0)
+        if any(
+            delimiter in delimiters
+            and _registered_tokens(prefix) == introducer
+            for introducer, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS
+        ):
+            continue
+        remainder = _registered_tokens(stripped[match.end() :])
+        if remainder:
+            remainders.append(remainder)
+    return tuple(remainders)
 
 
 def _registered_context_before_line(lines: list[str], line_index: int) -> bool:
@@ -891,6 +992,7 @@ def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
                 continue
             neutral_remainder = _registered_neutral_label_remainder(line)
             clauses.append(neutral_remainder if neutral_remainder is not None else _registered_tokens(line))
+            clauses.extend(_registered_separator_remainders(line))
     return tuple(clauses)
 
 
@@ -1199,7 +1301,6 @@ def _validate_researcher_semantics(
 ) -> None:
     return_schema = sections.get("RETURN SCHEMA", "")
     stop = sections.get("STOP / ESCALATE", "")
-    compact_return = _compact(return_schema)
     operational_text = _operational_text(sections)
     _reject_registered_literals(
         errors,
@@ -1216,8 +1317,13 @@ def _validate_researcher_semantics(
         "contradictory further-fallback permission is forbidden",
     )
     for anchor in RESEARCH_STATUS_FAILURE_ANCHORS:
-        if anchor not in compact_return:
-            errors.append(f"{label}: researcher status/failure matrix anchor missing: {anchor}")
+        _require_exact_schema_line(
+            errors,
+            label,
+            return_schema,
+            anchor,
+            "researcher status/failure matrix anchor missing",
+        )
     _require_anchor(
         errors,
         label,
