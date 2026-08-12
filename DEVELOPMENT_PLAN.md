@@ -47,10 +47,11 @@ flowchart TB
     L --> P["Closed classified task packet"]
     P --> F["forward_router.py"]
     F --> R["route_research.py replay"]
-    R --> C{"Docs route state"}
-    C -->|"Luna first"| LU["docs_researcher_luna\ngpt-5.6-luna / max"]
-    C -->|"NATIVE_ROUTING_FAILURE + same packet hash"| TE["At most one docs_researcher_terra\ngpt-5.6-terra / high"]
-    C -->|"other failure or unknown evidence"| S["STOP_FAILED / STOP_UNVERIFIED"]
+    R --> O["Validated state + next_action"]
+    O -->|"return replay/plan result"| L
+    L -->|"next_action=spawn_luna"| LU["docs_researcher_luna\ngpt-5.6-luna / max"]
+    L -->|"next_action=spawn_terra\nonly after classified NATIVE_ROUTING_FAILURE"| TE["At most one docs_researcher_terra\ngpt-5.6-terra / high"]
+    L -->|"terminal state / next_action=none"| S["Parent handles STOP_FAILED / STOP_UNVERIFIED\nor accepts DONE_LUNA / DONE_TERRA"]
     LU --> A["Parent Skill verifies and accepts"]
     TE --> A
     S --> A
@@ -63,25 +64,37 @@ flowchart TB
     RA -. "same-attempt observed evidence only" .-> A
 ```
 
-The parent Skill owns classification, native/App actions, diff/test/review
-triage, and acceptance. `forward_router.py` and `route_research.py` are
+The parent Skill owns classification, native/App actions, dispatch, diff/test/
+review triage, and acceptance. `forward_router.py` and `route_research.py` are
 deterministic offline helpers: they consume closed inputs, validate canonical
-hashes and state, and never classify prose, spawn, probe, authenticate, access
-the network, or invent native effective metadata.
+hashes and state, and return a validated `state`/`next_action` result to the
+parent Skill. They never classify prose, dispatch an agent, spawn, probe,
+authenticate, access the network, or invent native effective metadata. Only the
+parent Skill dispatches `docs_researcher_luna` or the at-most-one
+`docs_researcher_terra` handoff.
+
+For a docs packet, the closed forward plan reports
+`next_action=precheck`, `permitted_failure_class=NATIVE_ROUTING_FAILURE`,
+`max_attempts=1`, and `same_task_packet_hash=true`. These are parent-handling
+instructions, not evidence that a native route is effective.
 
 For a documentation task, the same-interface PRECHECK must expose both
 researcher names before Luna is requested. Exactly one Terra attempt is allowed
 only after a classified native routing rejection or a complete same-attempt
 native mismatch, and it must carry the same canonical `task_packet_hash`.
+The parent handles the replay states `FALLBACK_PENDING`, `DONE_LUNA`,
+`DONE_TERRA`, `STOP_FAILED`, and `STOP_UNVERIFIED`; every terminal state
+returns `next_action=none`.
 Content, tool, and task failures are terminal `STOP_FAILED`; a timeout is
 `STOP_FAILED` only when route metadata is complete and non-conflicting.
 Missing, conflicting, unobservable, and unknown route evidence is
 `STOP_UNVERIFIED`. No other outcome authorizes Terra.
 
-The App user-visible task lane is independent of native subagents and native
-fallback. It requires explicit authorization in the current request. The
-`gpt-5.6-luna` / `max` App lane used by this P3 development session is not
-repository/native effective-route evidence.
+The closed forward plan returns `create_app_task` only when the App task is
+explicitly authorized in the current request; otherwise it returns
+`stop_unverified`. The App user-visible task lane is independent of native
+subagents and native fallback. The `gpt-5.6-luna` / `max` App lane used by this
+P3 development session is not repository/native effective-route evidence.
 
 ## Installation and compatibility record
 
@@ -117,11 +130,30 @@ capability, observed, effective, or fallback-success facts.
 `runtime_records.py` keeps CLI, App-bundled CLI, native-spawn, and App-task
 records independent. Probe records are diagnostic-only. `runtime_audit.py`
 stores one schema-v1 `runtime_route_audit` per native or independent App-task
-attempt. The audit distinguishes `requested_*`, `configured_*`,
-`observed_effective_*`, requested/observed sandbox and permission values, and
-the failure/status fields. Missing facts remain `unknown`; no artifact may
-infer effective native values from an install manifest, probe, TOML, catalog, or
+attempt. Its closed `attempt` fields are:
+
+```text
+attempt_id, task_packet_hash, interface,
+requested_agent_type, requested_model, requested_effort,
+configured_agent_type, configured_model, configured_effort,
+observed_agent_type, observed_effective_model, observed_effective_effort,
+requested_sandbox, observed_sandbox, permission_profile,
+status, failure_class, fallback_reason, fallback_attempt, evidence_source
+```
+
+In particular, the audit has exact `requested_sandbox`, exact
+`observed_sandbox`, and one `permission_profile` field; there is no second or
+alternate permission-profile field. Its `evidence_source` fields are
+`kind`, `interface`, `runtime_id`, `attempt_id`, `scope`, and
+`diagnostic_only`. Missing facts remain `unknown`; no artifact may infer
+effective native values from an install manifest, probe, TOML, catalog, or
 App-task record.
+
+The installation manifest is `artifact_kind=installation_manifest`,
+`schema_version=2`, with closed fields `artifact_kind`, `schema_version`,
+`bundle_version`, `installed_at`, `scope`, `selected_profile`,
+`installed_agents`, and `configured_researchers`. It is separate from the
+per-attempt audit and records configuration facts only.
 
 ## Acceptance levels
 
