@@ -806,6 +806,90 @@ class SkillContractTests(unittest.TestCase):
                 errors = self.agent_errors(filename, sentence)
                 self.assertTrue(any(diagnostic in error for error in errors), errors)
 
+    def test_registered_quoting_introducers_protect_semicolon_immediate_clause(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        app_sentence = "App tasks could be created without explicit authorization."
+        failure_sentence = "Content failures could authorize Terra fallback."
+        benign = (
+            ("quoted-semicolon-app", "Quoted; " + app_sentence, app_diagnostic, "architect.toml"),
+            ("quote-semicolon-app", "Quote; " + app_sentence, app_diagnostic, "architect.toml"),
+            ("example-semicolon-app", "Example; " + app_sentence, app_diagnostic, "architect.toml"),
+            (
+                "quoted-semicolon-failure",
+                "Quoted; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "quote-semicolon-failure",
+                "Quote; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "example-semicolon-failure",
+                "Example; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in benign:
+            with self.subTest(path="Skill", control=name):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+            with self.subTest(path="agent", control=name):
+                self.assertEqual(self.agent_errors(filename, sentence), [])
+
+        rejecting = (
+            (
+                "quoted-later-semicolon-app",
+                "Quoted; " + app_sentence[:-1] + "; " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "quote-later-conjunction-app",
+                "Quote; " + app_sentence[:-1] + ", and " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "example-later-semicolon-app",
+                "Example; " + app_sentence[:-1] + "; " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "quoted-later-conjunction-failure",
+                "Quoted; " + failure_sentence[:-1] + ", and " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "quote-later-semicolon-failure",
+                "Quote; " + failure_sentence[:-1] + "; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "example-later-conjunction-failure",
+                "Example; " + failure_sentence[:-1] + ", and " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in rejecting:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
     def test_fenced_h2_h3_lines_fail_closed_without_breaking_code_fences(self) -> None:
         mutations = (
             ("skill-canonical-backtick", "SKILL.md", "```text\n## Contract\n```"),

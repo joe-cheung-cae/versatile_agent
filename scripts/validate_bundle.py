@@ -972,21 +972,6 @@ REGISTERED_NEGATED_CONTRACTION_PAIRS = frozenset(
         ("weren", "t"),
     }
 )
-REGISTERED_QUOTING_INTRODUCERS = frozenset(
-    {
-        ("never", "state"),
-        ("do", "not", "say"),
-        ("never", "authorize"),
-        ("do", "not", "authorize"),
-        ("never", "claim"),
-        ("do", "not", "claim"),
-        ("must", "not", "say"),
-        ("must", "not", "authorize"),
-        ("quoted",),
-        ("quote",),
-        ("example",),
-    }
-)
 REGISTERED_POLARITY_DIAGNOSTICS = {
     "app": "contradictory App task creation without explicit authorization is forbidden",
     "failure": "contradictory content/task/tool failure authorization of Terra fallback or route switching is forbidden",
@@ -999,6 +984,16 @@ def _strip_registered_list_marker(line: str) -> str:
 
 def _registered_tokens(text: str) -> tuple[str, ...]:
     return tuple(_normalize_registered_text(_strip_registered_list_marker(text)).split())
+
+
+def _registered_context_intro_protects(
+    prefix_tokens: tuple[str, ...], delimiter: str
+) -> bool:
+    """Use the registered introducer/delimiter table for immediate protection."""
+    return any(
+        prefix_tokens == introducer and delimiter in delimiters
+        for introducer, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS
+    )
 
 
 def _registered_neutral_label_remainder(text: str) -> tuple[str, ...] | None:
@@ -1027,11 +1022,7 @@ def _registered_separator_remainders(
     for match in REGISTERED_SEPARATOR_RE.finditer(stripped):
         prefix = stripped[: match.start()].strip()
         delimiter = match.group(0)
-        if any(
-            delimiter in delimiters
-            and _registered_tokens(prefix) == introducer
-            for introducer, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS
-        ):
+        if _registered_context_intro_protects(_registered_tokens(prefix), delimiter):
             continue
         remainder_text = stripped[match.end() :]
         if not REGISTERED_SEPARATOR_RE.search(remainder_text):
@@ -1082,10 +1073,7 @@ def _registered_polarity_segments(line: str) -> tuple[tuple[tuple[str, ...], boo
         suffix = _registered_tokens(stripped[match.end() :])
         if not suffix:
             continue
-        protected = (
-            match.group(0) in (":", "：")
-            and prefix_tokens in REGISTERED_QUOTING_INTRODUCERS
-        )
+        protected = _registered_context_intro_protects(prefix_tokens, match.group(0))
         segments.append((suffix, protected))
     return tuple(segments)
 
