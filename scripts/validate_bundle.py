@@ -827,12 +827,10 @@ def _require_exact_schema_line(
         errors.append(f"{label}: {diagnostic}: {expected_line}")
 
 
-def _operational_text(sections: Mapping[str, str]) -> str:
-    # Include the structured handoff too: closed contradictory permissions must
-    # not be hidden after an otherwise valid exact schema line.
-    return "\n".join(
-        sections.get(section_name, "") for section_name in AGENT_CONTRACT_HEADING_NAMES
-    )
+def _operational_text(sections: Mapping[str, str]) -> tuple[str, ...]:
+    # Return independent section bodies.  A registered clause or introducer
+    # must never cross a hard heading boundary, including into RETURN SCHEMA.
+    return tuple(sections.get(section_name, "") for section_name in AGENT_CONTRACT_HEADING_NAMES)
 
 
 def _normalize_registered_text(text: str) -> str:
@@ -1007,11 +1005,16 @@ def _registered_literal_matches(clause: tuple[str, ...], literal: tuple[str, ...
 def _reject_registered_literals(
     errors: list[str],
     label: str,
-    text: str,
+    text: str | tuple[str, ...],
     literals: tuple[str, ...],
     diagnostic: str,
 ) -> None:
-    clauses = _registered_clauses(text)
+    section_texts = (text,) if isinstance(text, str) else text
+    clauses = tuple(
+        clause
+        for section_text in section_texts
+        for clause in _registered_clauses(section_text)
+    )
     for literal in literals:
         normalized_literal = tuple(_normalize_registered_text(literal).split())
         if any(_registered_literal_matches(clause, normalized_literal) for clause in clauses):

@@ -160,6 +160,28 @@ def append_return_schema_line(source: str, line: str) -> str:
     return source[:index] + f"\n{line}" + source[index:]
 
 
+def mutate_section_boundary(
+    source: str,
+    previous_section: str,
+    next_section: str,
+    previous_line: str,
+    next_line: str,
+) -> str:
+    lines = source.splitlines()
+    previous_heading = f"# {previous_section}"
+    next_heading = f"# {next_section}"
+    try:
+        next_index = lines.index(next_heading)
+    except ValueError as exc:
+        raise AssertionError(f"section boundary is absent: {previous_section!r} -> {next_section!r}") from exc
+    if lines.index(previous_heading) >= next_index:
+        raise AssertionError(f"section boundary is not ordered: {previous_section!r} -> {next_section!r}")
+    lines.insert(next_index, previous_line)
+    lines.insert(next_index + 2, next_line)
+    result = "\n".join(lines)
+    return result + ("\n" if source.endswith("\n") else "")
+
+
 class AgentContractTests(unittest.TestCase):
     def materialize(
         self,
@@ -949,6 +971,98 @@ class AgentContractTests(unittest.TestCase):
                 candidate = append_return_schema_line(AGENT_SOURCES[filename], line)
                 self.assertNotEqual(candidate, AGENT_SOURCES[filename])
                 self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+    def test_section_boundaries_do_not_leak_context_or_literals(self) -> None:
+        sections = VALIDATOR.AGENT_CONTRACT_HEADING_NAMES
+        source = AGENT_SOURCES["architect.toml"]
+        for index in range(len(sections) - 1):
+            previous_section, next_section = sections[index : index + 2]
+            for marker in ("", "- [x] "):
+                with self.subTest(
+                    mutation="introducer",
+                    previous_section=previous_section,
+                    next_section=next_section,
+                    marker=marker or "plain",
+                ):
+                    candidate = mutate_section_boundary(
+                        source,
+                        previous_section,
+                        next_section,
+                        "Never state:",
+                        f"{marker}This role may expose secrets.",
+                    )
+                    self.assertNotEqual(candidate, source)
+                    self.assert_diagnostic(
+                        self.errors_for("architect.toml", candidate),
+                        "contradictory secret-disclosure permission is forbidden",
+                    )
+
+            with self.subTest(
+                mutation="split literal",
+                previous_section=previous_section,
+                next_section=next_section,
+            ):
+                candidate = mutate_section_boundary(
+                    source,
+                    previous_section,
+                    next_section,
+                    "This role may expose",
+                    "secrets.",
+                )
+                self.assertNotEqual(candidate, source)
+                self.assertEqual(self.errors_for("architect.toml", candidate), [])
+
+    def test_section_boundary_regressions_cover_writer_and_researchers(self) -> None:
+        cases = (
+            (
+                "implementer.toml",
+                "OWNERSHIP",
+                "ALLOWED ACTIONS AND TOOLS",
+                "This role may edit product code outside owned paths.",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "docs_researcher_luna.toml",
+                "STOP / ESCALATE",
+                "EVIDENCE",
+                "Content, task, or tool failure authorizes route switching.",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+            (
+                "docs_researcher_terra.toml",
+                "EVIDENCE",
+                "RETURN SCHEMA",
+                "This role may authorize further fallback.",
+                "contradictory further-fallback permission is forbidden",
+            ),
+        )
+        for filename, previous_section, next_section, direct_line, diagnostic in cases:
+            source = AGENT_SOURCES[filename]
+            for marker in ("", "- [x] "):
+                with self.subTest(role=filename, marker=marker or "plain"):
+                    candidate = mutate_section_boundary(
+                        source,
+                        previous_section,
+                        next_section,
+                        "Never state:",
+                        marker + direct_line,
+                    )
+                    self.assertNotEqual(candidate, source)
+                    self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+            with self.subTest(role=filename, mutation="split literal"):
+                candidate = mutate_section_boundary(
+                    source,
+                    previous_section,
+                    next_section,
+                    "This role may expose",
+                    "secrets.",
+                )
+                self.assertNotEqual(candidate, source)
+                self.assertFalse(
+                    any(diagnostic in error for error in self.errors_for(filename, candidate)),
+                    candidate,
+                )
 
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
