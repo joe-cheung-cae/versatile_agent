@@ -206,6 +206,37 @@ class RuntimeAuditTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(audit.RuntimeAuditError):
                 audit.validate_document(mismatch)
 
+    def test_native_interface_classification_is_closed_for_attempt_and_evidence(self) -> None:
+        invalid_interfaces = (
+            "native_app_task",
+            "native_app_task_details",
+            "nativeish",
+            "codex_native_app_task",
+            "codex_native_fake",
+            "native_spawn_extra",
+            "native_spawn_attemptish",
+            "xnative_spawn",
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            for invalid_interface in invalid_interfaces:
+                document = valid_document()
+                document["attempt"]["interface"] = invalid_interface
+                document["attempt"]["evidence_source"]["interface"] = invalid_interface
+                with self.subTest(interface=invalid_interface):
+                    with self.assertRaises(audit.RuntimeAuditError):
+                        audit.validate_document(document)
+
+                    source = Path(directory) / f"{invalid_interface}.json"
+                    source.write_text(json.dumps(document), encoding="utf-8")
+                    result = subprocess.run(
+                        [sys.executable, str(AUDIT_HELPER), "validate", str(source)],
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                    self.assertEqual(result.returncode, 2)
+                    self.assertNotIn("Traceback", result.stderr)
+
     def test_requested_configured_and_observed_tuples_are_atomic(self) -> None:
         for fields in (
             ("requested_agent_type", "requested_model", "requested_effort"),

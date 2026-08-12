@@ -61,6 +61,7 @@ SOURCE_SCOPES = {
     "diagnostic-only",
     "unknown",
 }
+NATIVE_INTERFACE_IDENTIFIERS = frozenset({"native", "native_spawn", "native_spawn_attempt"})
 FAILURE_CLASSES = {
     "NONE",
     "NATIVE_ROUTING_FAILURE",
@@ -140,7 +141,7 @@ def _validate_atomic_tuple(attempt: dict[str, Any], fields: tuple[str, ...], loc
 
 
 def _is_native_interface(value: str) -> bool:
-    return value == "native" or value.startswith("native") or value.startswith("codex_native")
+    return value in NATIVE_INTERFACE_IDENTIFIERS
 
 
 def _validate_evidence_source(value: Any, attempt: dict[str, Any]) -> None:
