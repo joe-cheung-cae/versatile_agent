@@ -239,6 +239,10 @@ class SkillContractTests(unittest.TestCase):
                 "The effective route is not proven by the manifest.",
                 "This Skill does not switch the parent model.",
                 "The parent model is not switched by this Skill.",
+                "Offline validation does not prove live runtime conformance.",
+                "Live runtime conformance is not proven by offline validation.",
+                "Do not create an App task without explicit authorization.",
+                "Do not claim that content failures authorize Terra fallback.",
             )
         )
         self.assertEqual(
@@ -255,14 +259,25 @@ class SkillContractTests(unittest.TestCase):
             "This Skill switches the parent model.",
             "The parent model is switched by this Skill.",
             "Content failures can authorize Terra fallback.",
+            "Content failures could authorize Terra fallback.",
             "Terra fallback can be authorized by content failures.",
+            "Terra fallback could be authorized by content failures.",
             "The installation manifest can prove the effective native route.",
+            "The installation manifest could prove the effective native route.",
             "The effective native route can be proven by the installation manifest.",
+            "The effective native route could be proven by the installation manifest.",
             "This Skill can switch the parent model.",
+            "This Skill could switch the parent model.",
             "The parent model can be switched by this Skill.",
+            "The parent model could be switched by this Skill.",
             "Implicit consent suffices for App tasks.",
+            "App tasks could be created without explicit authorization.",
+            "Offline validation proves live runtime conformance.",
+            "Live runtime conformance is proven by offline validation.",
             "The App task cannot be created without explicit authorization, but content failures authorize Terra fallback.",
             "Content failures never authorize Terra fallback, but Terra fallback can be authorized by content failures.",
+            "Do not create an App task without explicit authorization, but App tasks could be created without explicit authorization.",
+            "Do not claim that content failures authorize Terra fallback, but tool failures authorize Terra fallback.",
         )
         for addition in rejected:
             with self.subTest(sentence=addition):
@@ -290,6 +305,8 @@ class SkillContractTests(unittest.TestCase):
             "This Skill cannot switch the parent model.",
             "The parent model cannot be switched by this Skill.",
             "Implicit consent does not suffice for App tasks.",
+            "Offline validation does not prove live runtime conformance.",
+            "Live runtime conformance is not proven by offline validation.",
         )
         for addition in accepted:
             with self.subTest(sentence=addition):
@@ -440,6 +457,30 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+        reference_style_skill = self.skill.replace(
+            "[references/model-routing.md](references/model-routing.md)",
+            "[model routing][model-routing-ref]",
+        )
+        reference_style_skill += "\n[model-routing-ref]: references/model-routing.md\n"
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(reference_style_skill, self.references, SKILL_PATH),
+            [],
+        )
+
+        unused_definitions = "\n".join(
+            f"[unused-{name}]: references/{name}" for name in sorted(REQUIRED_REFERENCES)
+        )
+        without_rendered_links = re.sub(
+            r"\[[^\]]+\]\(\s*(?:<[^>]+>|[^\s)]+)\)",
+            "",
+            self.skill,
+        ) + "\n" + unused_definitions
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(without_rendered_links, self.references, SKILL_PATH),
+                [],
+            )
+
         external_reference_map = dict(self.references)
         external_reference_map["workflow.md"] += "\n[Docs](https://example.com/model-routing.md?x=1#y)\n[Mail](mailto:docs@example.com)\n"
         self.assertEqual(
@@ -458,6 +499,18 @@ class SkillContractTests(unittest.TestCase):
         for mutation in packet_mutations:
             with self.subTest(packet=mutation), self.assertRaises(AssertionError):
                 self.assertEqual(VALIDATOR.task_contract_violations(mutation), [])
+        fenced_fake = packet.replace(
+            "## 3. Inputs/evidence",
+            "```markdown\n## 3. Inputs/evidence\n```\n#### Rendered fake",
+        )
+        with self.assertRaises(AssertionError):
+            self.assertEqual(VALIDATOR.task_contract_violations(fenced_fake), [])
+        fenced_examples = packet + (
+            "\n```markdown\n## 99. Fake\nFake text\n---\n```\n"
+            "````markdown\n## 98. Fake\nFake text\n===\n`````\n"
+            "~~~~markdown\n### 99. Fake\nFake text\n===\n~~~~~\n"
+        )
+        self.assertEqual(VALIDATOR.task_contract_violations(fenced_examples), [])
         self.assertEqual(
             VALIDATOR.task_contract_violations(packet + "\n- ordinary packet detail\n"),
             [],

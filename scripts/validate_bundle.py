@@ -84,9 +84,12 @@ TASK_CONTRACT_HEADINGS = (
     "## 5. Verification/handoff",
 )
 INLINE_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(\s*(?:<([^>]+)>|([^\s)]+))")
-REFERENCE_DEFINITION_RE = re.compile(r"(?m)^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
-ATX_CONTRACT_SECTION_RE = re.compile(r"(?m)^#{2,3}[ \t]+[^\n]+?[ \t]*$")
-SETEXT_HEADING_RE = re.compile(r"(?m)^[^\n]+\n[ \t]*(?:=+|-+)[ \t]*(?=\n|$)")
+REFERENCE_DEFINITION_RE = re.compile(r"(?m)^[ \t]{0,3}\[([^\]]+)\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
+REFERENCE_USAGE_RE = re.compile(r"\[([^\]]+)\]\[([^\]]*)\]")
+ATX_TASK_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$")
+FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
+FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 CONTRACT_CLAUSE_SPLIT_RE = re.compile(r"(?:[.!?;:]+(?=\s|$)|\b(?:but|however|although)\b)")
 
 
@@ -115,6 +118,8 @@ PASSIVE_ROUTING_ACTION = r"(?:authorized|triggered|permitted|allowed|enabled)"
 ROUTE_EVIDENCE = r"(?:the\s+)?(?:installation\s+manifest|manifest|probe)"
 EFFECTIVE_ROUTE = r"(?:the\s+)?(?:effective\s+)?(?:native\s+)?route"
 AUTOMATIC_CLI = r"automatic\s+cli\s+(?:routing|fallback|model\s+switch(?:ing)?)"
+LIVE_CONFORMANCE_EVIDENCE = r"(?:offline\s+validation|offline\s+checks|offline\s+validator)"
+LIVE_RUNTIME_CONFORMANCE = r"(?:live\s+runtime\s+conformance|live\s+conformance)"
 
 
 # Each rule has positive forms and explicit local negation guards. Matching is
@@ -130,12 +135,13 @@ CONTRACT_CONTRADICTION_RULES: tuple[
             re.compile(r"\bno\s+(?:explicit\s+)?authori[sz]ation\s+(?:is\s+)?required\s+for\s+app(?:\s+user-visible)?\s+tasks?\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:do\s+not|don't|never)\s+require\s+(?:any\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\b(?:create|creating)\s+(?:an?\s+)?app(?:\s+user-visible)?\s+task\b[^.!?;:]{0,80}\bwithout\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
-            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:may|can|will|is|are)\s+(?:be\s+)?created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
-            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}\b(?:may|can|will)\s+(?:be\s+)?created[^.!?;:]{0,40}\bby\s+default\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:may|can|could|will|is|are)\s+(?:be\s+)?created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}\b(?:may|can|could|will)\s+(?:be\s+)?created[^.!?;:]{0,40}\bby\s+default\b"),
         ),
         (
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+cannot\s+be\s+created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:must|should)\s+not\s+be\s+created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\b(?:do\s+not|don't|never|must\s+not|should\s+not)\s+(?:create|creating)\s+(?:an?\s+)?app(?:\s+user-visible)?\s+task\b[^.!?;:]{0,80}\bwithout\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
         ),
     ),
     (
@@ -164,13 +170,14 @@ CONTRACT_CONTRADICTION_RULES: tuple[
     (
         "Non-routing failures may authorize Terra or fallback",
         (
-            re.compile(rf"\b{FAILURE_SOURCE}\s+(?:(?:may|can)\s+)?{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
-            re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are|can\s+be)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
+            re.compile(rf"\b{FAILURE_SOURCE}\s+(?:(?:may|can|could)\s+)?{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
+            re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are|can\s+be|could\s+be)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
         ),
         (
             re.compile(rf"\b{FAILURE_SOURCE}\s+(?:never|does\s+not|do\s+not|cannot|can't)\s+{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
             re.compile(rf"\b{FAILURE_SOURCE}\s+{ROUTING_ACTION}\s+no\s+{ROUTING_TARGET}\b"),
             re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are)\s+(?:not|never)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
+            re.compile(rf"\b(?:do\s+not|don't|never|must\s+not|should\s+not)\s+claim\s+that\s+{FAILURE_SOURCE}\s+{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
         ),
     ),
     (
@@ -230,8 +237,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         "Probe, manifest, or App task proves effective route",
         (
             re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:proves?|establishes?|demonstrates?|confirms?)\s+{EFFECTIVE_ROUTE}\b"),
-            re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:may|can)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
-            re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are|can\s+be)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
+            re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:may|can|could)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
+            re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are|can\s+be|could\s+be)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
         ),
         (
             re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
@@ -239,10 +246,21 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         ),
     ),
     (
+        "Offline validation proves live runtime conformance",
+        (
+            re.compile(rf"\b{LIVE_CONFORMANCE_EVIDENCE}\s+(?:proves?|establishes?|demonstrates?|confirms?)\s+(?:the\s+)?{LIVE_RUNTIME_CONFORMANCE}\b"),
+            re.compile(rf"\b{LIVE_RUNTIME_CONFORMANCE}\s+(?:is|are|can\s+be|could\s+be)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{LIVE_CONFORMANCE_EVIDENCE}\b"),
+        ),
+        (
+            re.compile(rf"\b{LIVE_CONFORMANCE_EVIDENCE}\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:prove|establish|demonstrate|confirm)\s+(?:the\s+)?{LIVE_RUNTIME_CONFORMANCE}\b"),
+            re.compile(rf"\b{LIVE_RUNTIME_CONFORMANCE}\s+(?:is|are)\s+(?:not|never)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{LIVE_CONFORMANCE_EVIDENCE}\b"),
+        ),
+    ),
+    (
         "Skill changes parent model or permissions",
         (
-            re.compile(r"\b(?:this\s+)?skill\s+(?:(?:changes?|switches?|controls?|overrides?)|can\s+(?:change|switch|control|override))\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
-            re.compile(r"\b(?:the\s+)?(?:parent\s+model|permissions?)\s+(?:is|are|can\s+be)\s+(?:changed|switched|controlled|overridden)\s+by\s+(?:this\s+)?skill\b"),
+            re.compile(r"\b(?:this\s+)?skill\s+(?:(?:changes?|switches?|controls?|overrides?)|(?:can|could)\s+(?:change|switch|control|override))\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
+            re.compile(r"\b(?:the\s+)?(?:parent\s+model|permissions?)\s+(?:is|are|can\s+be|could\s+be)\s+(?:changed|switched|controlled|overridden)\s+by\s+(?:this\s+)?skill\b"),
         ),
         (
             re.compile(r"\b(?:this\s+)?skill\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:change|switch|control|override)\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
@@ -284,19 +302,44 @@ def _normalize_markdown_target(raw_target: str) -> str | None:
     return target or None
 
 
-def extract_local_markdown_targets(text: str) -> list[str]:
-    """Extract normalized local targets from inline and reference-style links."""
+def _normalize_reference_label(label: str) -> str:
+    return re.sub(r"\s+", " ", label.casefold().strip())
 
-    raw_targets: list[str] = []
-    for match in INLINE_MARKDOWN_LINK_RE.finditer(text):
-        raw_targets.append(match.group(1) or match.group(2))
+
+def _reference_definitions(text: str) -> dict[str, str]:
+    definitions: dict[str, str] = {}
     for match in REFERENCE_DEFINITION_RE.finditer(text):
-        raw_targets.append(match.group(1) or match.group(2))
+        label = _normalize_reference_label(match.group(1))
+        if label:
+            definitions[label] = match.group(2) or match.group(3)
+    return definitions
+
+
+def _rendered_markdown_targets(text: str) -> tuple[list[str], list[str]]:
+    """Return rendered inline/reference-use targets and unresolved labels."""
+
+    raw_targets = [match.group(1) or match.group(2) for match in INLINE_MARKDOWN_LINK_RE.finditer(text)]
+    definitions = _reference_definitions(text)
+    unresolved: list[str] = []
+    for match in REFERENCE_USAGE_RE.finditer(text):
+        usage_label = match.group(2) or match.group(1)
+        definition = definitions.get(_normalize_reference_label(usage_label))
+        if definition is None:
+            unresolved.append(usage_label)
+        else:
+            raw_targets.append(definition)
     targets: list[str] = []
     for raw_target in raw_targets:
         target = _normalize_markdown_target(raw_target)
         if target is not None:
             targets.append(target)
+    return targets, unresolved
+
+
+def extract_local_markdown_targets(text: str) -> list[str]:
+    """Extract normalized targets from rendered inline and reference-use links."""
+
+    targets, _ = _rendered_markdown_targets(text)
     return targets
 
 
@@ -305,11 +348,22 @@ def _contract_rule_matches(
     positive_patterns: tuple[re.Pattern[str], ...],
     negative_patterns: tuple[re.Pattern[str], ...],
 ) -> bool:
+    """Match a contradiction unless a negation overlaps that same match."""
+
     for clause in clauses:
-        if any(pattern.search(clause) for pattern in positive_patterns) and not any(
-            pattern.search(clause) for pattern in negative_patterns
-        ):
-            return True
+        negative_spans = [
+            match.span()
+            for pattern in negative_patterns
+            for match in pattern.finditer(clause)
+        ]
+        for pattern in positive_patterns:
+            for positive_match in pattern.finditer(clause):
+                positive_start, positive_end = positive_match.span()
+                if not any(
+                    negative_start < positive_end and positive_start < negative_end
+                    for negative_start, negative_end in negative_spans
+                ):
+                    return True
     return False
 
 
@@ -334,15 +388,58 @@ def semantic_contract_violations(
     return violations
 
 
-def task_contract_violations(text: str) -> list[str]:
-    """Require exactly five H2 sections and reject Setext headings."""
+def _unfenced_lines(text: str) -> list[str]:
+    """Return lines rendered as Markdown outside backtick/tilde fences."""
 
-    headings = [match.group(0).strip() for match in ATX_CONTRACT_SECTION_RE.finditer(text)]
+    rendered: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    for line in text.splitlines():
+        if fence_char is None:
+            opening = FENCE_OPEN_RE.match(line)
+            if opening is not None:
+                fence = opening.group(1)
+                fence_char = fence[0]
+                fence_length = len(fence)
+                continue
+            rendered.append(line)
+            continue
+
+        closing = FENCE_CLOSE_RE.match(line)
+        if closing is not None:
+            fence = closing.group(1)
+            if fence[0] == fence_char and len(fence) >= fence_length:
+                fence_char = None
+                fence_length = 0
+    return rendered
+
+
+def task_contract_violations(text: str) -> list[str]:
+    """Require exactly five rendered H2 sections and reject Setext headings."""
+
+    lines = _unfenced_lines(text)
+    headings: list[str] = []
+    non_h2_headings: list[str] = []
+    for line in lines:
+        match = ATX_TASK_HEADING_RE.match(line)
+        if match is None:
+            continue
+        level = len(match.group(1))
+        heading = f"{'#' * level} {match.group(2).strip()}"
+        if level == 2:
+            headings.append(heading)
+        elif level >= 3:
+            non_h2_headings.append(heading)
+
     violations: list[str] = []
     if headings != list(TASK_CONTRACT_HEADINGS):
-        violations.append(f"task-contract H2/H3 headings must be exactly {list(TASK_CONTRACT_HEADINGS)}: {headings}")
-    if SETEXT_HEADING_RE.search(text) is not None:
-        violations.append("task-contract must not contain Setext headings")
+        violations.append(f"task-contract H2 headings must be exactly {list(TASK_CONTRACT_HEADINGS)}: {headings}")
+    if non_h2_headings:
+        violations.append(f"task-contract must not contain rendered H3-H6 headings: {non_h2_headings}")
+    for index, line in enumerate(lines[:-1]):
+        if line.strip() and SETEXT_UNDERLINE_RE.match(lines[index + 1]):
+            violations.append("task-contract must not contain rendered Setext headings")
+            break
     return violations
 
 
@@ -361,7 +458,10 @@ def reference_topology_violations(
         )
 
     expected_links = {f"references/{name}" for name in SKILL_REFERENCE_FILES}
-    local_links = set(extract_local_markdown_targets(skill_text))
+    rendered_skill_links, unresolved_skill_links = _rendered_markdown_targets(skill_text)
+    local_links = set(rendered_skill_links)
+    for label in unresolved_skill_links:
+        violations.append(f"SKILL.md has an unresolved reference-style link: {label}")
     if local_links != expected_links:
         violations.append(f"SKILL.md links must resolve to direct references only: {sorted(local_links)}")
 
@@ -371,7 +471,10 @@ def reference_topology_violations(
                 violations.append(f"SKILL.md has an unresolved local link: {target}")
 
     for name, text in reference_map.items():
-        nested_links = [target for target in extract_local_markdown_targets(text) if target.casefold().endswith(".md")]
+        rendered_links, unresolved_links = _rendered_markdown_targets(text)
+        for label in unresolved_links:
+            violations.append(f"skill reference has an unresolved reference-style link: {name}: {label}")
+        nested_links = [target for target in rendered_links if target.casefold().endswith(".md")]
         if nested_links:
             violations.append(f"skill reference must not link to another local reference: {name}: {nested_links}")
     return violations
