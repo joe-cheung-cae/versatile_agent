@@ -4,6 +4,25 @@
 显式编排，不把 CLI 的模型选择、probe、TOML、catalog 或 App task 当作
 native effective evidence。
 
+## Canonical routing contract
+
+<!-- BEGIN versatile-dev canonical routing contract -->
+Both docs_researcher_luna and docs_researcher_terra are installed and pinned to gpt-5.6-luna/max and gpt-5.6-terra/high.
+Both researchers use the same-interface PRECHECK.
+route_research.py provides deterministic replay and decision semantics.
+Luna is first; only a classified native routing rejection or complete same-attempt native mismatch permits at most one Terra attempt.
+A permitted Terra transition is FALLBACK_PENDING and is limited to one Terra attempt.
+Content, tool, task, timeout, and unknown failures do not authorize Terra fallback.
+Missing, conflicting, or unobservable effective evidence is STOP_UNVERIFIED.
+Every attempt carries the same canonical task_packet_hash.
+runtime_audit.py is separate from the installation manifest.
+Installed, configured, capability, requested, observed, and effective are separate fact layers.
+The installation manifest, probe, and App task cannot fill native effective facts.
+The App user-visible task lane requires explicit authorization in the current user request and cannot authorize native Terra fallback.
+This Skill cannot change the parent model, bypass permissions, guarantee model availability, or perform automatic CLI model switching or fallback.
+Offline validation does not prove live runtime conformance.
+<!-- END versatile-dev canonical routing contract -->
+
 安装 bundle 同时包含两个 read-only named agents：
 
 1. `docs_researcher_luna`，请求 `gpt-5.6-luna` / `max`；
