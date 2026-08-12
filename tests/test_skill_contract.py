@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -48,10 +49,37 @@ class SkillContractTests(unittest.TestCase):
         errors = VALIDATOR.reference_topology_violations(skill, references or self.references, SKILL_PATH)
         self.assertTrue(errors, "the topology mutation was accepted")
 
+    def validate_materialized(self, mutations: dict[str, bytes] | None = None) -> list[str]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for source in (SKILL_PATH, UI_PATH, *REFERENCE_DIR.glob("*.md")):
+                target = root / source.relative_to(ROOT)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(source.read_bytes())
+            for relative, contents in (mutations or {}).items():
+                (root / relative).write_bytes(contents)
+            check = VALIDATOR.Validation()
+            VALIDATOR.validate_skill(root, check)
+            return check.errors
+
     def test_real_tree_is_valid(self) -> None:
         self.assertEqual(VALIDATOR.semantic_contract_violations(self.skill, self.references, self.ui), [])
         self.assertEqual(VALIDATOR.reference_topology_violations(self.skill, self.references, SKILL_PATH), [])
         self.assertEqual(VALIDATOR.task_contract_violations(self.task), [])
+        self.assertEqual(self.validate_materialized(), [])
+
+    def test_validate_skill_preserves_newlines_and_rejects_invalid_utf8(self) -> None:
+        sources = (
+            ("payload/skills/versatile-dev/SKILL.md", SKILL_PATH.read_bytes()),
+            ("payload/skills/versatile-dev/references/workflow.md", (REFERENCE_DIR / "workflow.md").read_bytes()),
+            ("payload/skills/versatile-dev/agents/openai.yaml", UI_PATH.read_bytes()),
+        )
+        for relative, contents in sources:
+            for newline in (b"\r\n", b"\r"):
+                errors = self.validate_materialized({relative: contents.replace(b"\n", newline)})
+                self.assertTrue(errors, f"{relative} accepted {newline!r}")
+        errors = self.validate_materialized({"payload/skills/versatile-dev/SKILL.md": b"\xff\n"})
+        self.assertTrue(any("invalid UTF-8 controlled source" in error for error in errors))
 
     def test_frontmatter_trigger_boundaries_and_prompt(self) -> None:
         block, errors = VALIDATOR._frontmatter(self.skill)

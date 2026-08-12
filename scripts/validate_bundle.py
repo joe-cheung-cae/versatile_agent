@@ -163,7 +163,6 @@ STALE_LITERALS = (
     "probe confirms effective native route",
 )
 
-
 class Validation:
     def __init__(self) -> None:
         self.errors: list[str] = []
@@ -171,7 +170,6 @@ class Validation:
     def require(self, condition: bool, message: str) -> None:
         if not condition:
             self.errors.append(message)
-
 
 def parse_agent(path: Path, check: Validation) -> dict:
     try:
@@ -188,7 +186,6 @@ def parse_agent(path: Path, check: Validation) -> dict:
     check.require(bool(str(data.get("developer_instructions", "")).strip()), f"{path} has empty developer instructions")
     return data
 
-
 def _frontmatter(text: str) -> tuple[str | None, list[str]]:
     match = re.match(r"\A---\n(.*?)\n---\n", text, re.DOTALL)
     if match is None:
@@ -198,7 +195,6 @@ def _frontmatter(text: str) -> tuple[str | None, list[str]]:
     if block != expected:
         return block, ["SKILL.md frontmatter must be the exact two-line trigger contract"]
     return block, []
-
 
 _UNSUPPORTED_SOURCE_SEPARATORS = (
     ("\r", "CR"),
@@ -222,6 +218,16 @@ def _source_separator_violations(filename: str, text: str) -> list[str]:
                 errors.append(f"{filename}:{number} contains unsupported {name} line separator")
     return errors
 
+def _read_controlled_source(path: Path, check: Validation) -> str:
+    try:
+        return path.read_bytes().decode("utf-8")
+    except UnicodeDecodeError:
+        message = f"{path}: invalid UTF-8 controlled source"
+    except OSError as exc:
+        message = f"{path}: unable to read controlled source ({type(exc).__name__})"
+    check.errors.append(message)
+    return ""
+
 def _fence_start(line: str) -> tuple[str, int] | None:
     backtick = re.fullmatch(r"[ ]{0,3}(`{3,})([^`]*)", line)
     if backtick is not None:
@@ -231,11 +237,9 @@ def _fence_start(line: str) -> tuple[str, int] | None:
         return "~", len(tilde.group(1))
     return None
 
-
 def _fence_close(line: str, fence: tuple[str, int]) -> bool:
     marker, length = fence
     return re.fullmatch(rf"[ ]{{0,3}}{re.escape(marker)}{{{length},}}[ \t]*", line) is not None
-
 
 def _source_flags(
     text: str,
@@ -282,7 +286,6 @@ def _source_flags(
         flags.append(active and not container and not inline_code)
     return flags
 
-
 def _source_dialect_violations(filename: str, text: str) -> list[str]:
     """Reject unsupported angle/HTML source; only registered marker lines are allowed."""
     registered = CANONICAL_BLOCKS.get(filename)
@@ -306,7 +309,6 @@ def _source_dialect_violations(filename: str, text: str) -> list[str]:
     if fence is not None:
         errors.append(f"{filename} contains an unclosed fenced source block")
     return errors
-
 
 def canonical_block_violations(filename: str, text: str) -> list[str]:
     registered = CANONICAL_BLOCKS.get(filename)
@@ -349,7 +351,6 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
             errors.append(f"{filename} canonical clause must occur exactly once: {line}")
     return errors
 
-
 def openai_yaml_violations(text: str) -> list[str]:
     """Parse the deliberately closed interface schema, not general YAML."""
     lines = _source_lines(text)
@@ -380,7 +381,6 @@ def openai_yaml_violations(text: str) -> list[str]:
         if values.get(key) != expected:
             errors.append(f"agents/openai.yaml {key} drifted from its canonical value")
     return errors
-
 
 def _inline_tokens(line: str) -> list[tuple[int, int, str, str]]:
     tokens: list[tuple[int, int, str, str]] = []
@@ -566,17 +566,17 @@ def validate_skill(root: Path, check: Validation) -> None:
     check.require(skill.is_file(), f"missing {skill}")
     if not skill.is_file():
         return
-    text = skill.read_text(encoding="utf-8")
+    text = _read_controlled_source(skill, check)
     reference_dir = root / "payload/skills/versatile-dev/references"
     actual_references = {path.name for path in reference_dir.glob("*.md")}
     reference_map = {
-        path.name: path.read_text(encoding="utf-8")
+        path.name: _read_controlled_source(path, check)
         for path in reference_dir.glob("*.md")
         if path.is_file()
     }
     ui = root / "payload/skills/versatile-dev/agents/openai.yaml"
     check.require(ui.is_file(), "missing agents/openai.yaml")
-    ui_text = ui.read_text(encoding="utf-8") if ui.is_file() else ""
+    ui_text = _read_controlled_source(ui, check) if ui.is_file() else ""
     check.require(actual_references == SKILL_REFERENCE_FILES, f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(actual_references)}")
     for error in semantic_contract_violations(text, reference_map, ui_text):
         check.errors.append(error)
