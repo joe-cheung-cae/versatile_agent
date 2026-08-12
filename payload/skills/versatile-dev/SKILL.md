@@ -9,7 +9,11 @@ description: Use for non-trivial repository engineering needing mapping, plannin
 
 <!-- BEGIN versatile-dev canonical contract -->
 Lead owns user intent, architecture, task state, diff, tests, review triage, and acceptance.
-Simple obvious changes use direct work; delegation is only for material work.
+Classify work as Simple (isolated and obvious), Moderate (multi-file, non-obvious, or test-bearing), or Complex (architecture, concurrency, CUDA, numerical, security, interface, or performance-sensitive); reclassify when evidence changes.
+Simple obvious changes use direct work; delegate only when delegation is material to correctness, coverage, or throughput.
+Native documentation research uses the same-interface PRECHECK; missing, conflicting, or unobservable metadata fails closed, with routing details in the model-routing reference.
+Luna is first; only a classified native routing rejection or complete same-attempt native mismatch permits at most one Terra; all other outcomes fail closed.
+The App user-visible task lane is separate and requires explicit authorization in the current user request; it never supplies native effective evidence or authorizes Terra fallback.
 The task packet has exactly five parts: Objective, Ownership, Inputs/evidence, Constraints/requirements, Verification/handoff.
 A dynamic packet names actual files, interfaces, commands, evidence, constraints, and verification.
 One writer owns overlapping files; parallel work is limited to disjoint files.

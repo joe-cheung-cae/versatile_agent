@@ -114,7 +114,11 @@ CANONICAL_BLOCKS = {
         "<!-- END versatile-dev canonical contract -->",
         (
             "Lead owns user intent, architecture, task state, diff, tests, review triage, and acceptance.",
-            "Simple obvious changes use direct work; delegation is only for material work.",
+            "Classify work as Simple (isolated and obvious), Moderate (multi-file, non-obvious, or test-bearing), or Complex (architecture, concurrency, CUDA, numerical, security, interface, or performance-sensitive); reclassify when evidence changes.",
+            "Simple obvious changes use direct work; delegate only when delegation is material to correctness, coverage, or throughput.",
+            "Native documentation research uses the same-interface PRECHECK; missing, conflicting, or unobservable metadata fails closed, with routing details in the model-routing reference.",
+            "Luna is first; only a classified native routing rejection or complete same-attempt native mismatch permits at most one Terra; all other outcomes fail closed.",
+            "The App user-visible task lane is separate and requires explicit authorization in the current user request; it never supplies native effective evidence or authorizes Terra fallback.",
             "The task packet has exactly five parts: Objective, Ownership, Inputs/evidence, Constraints/requirements, Verification/handoff.",
             "A dynamic packet names actual files, interfaces, commands, evidence, constraints, and verification.",
             "One writer owns overlapping files; parallel work is limited to disjoint files.",
@@ -269,11 +273,10 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     if begin_index >= end_index or not flags[begin_index] or not flags[end_index]:
         return [f"{filename} canonical block markers must be unindented and unmasked"]
     section = CANONICAL_SECTIONS[filename]
-    section_indexes = [i for i, line in enumerate(lines[:begin_index]) if line == section]
-    if section_indexes != [max(section_indexes, default=-1)]:
-        return [f"{filename} canonical block section is missing or duplicated"]
-    if not section_indexes:
-        return [f"{filename} canonical block must be under {section}"]
+    all_section_indexes = [i for i, line in enumerate(lines[:begin_index]) if line == section]
+    active_section_indexes = [i for i in all_section_indexes if flags[i]]
+    if all_section_indexes != active_section_indexes or len(active_section_indexes) != 1:
+        return [f"{filename} canonical block requires exactly one active, unmasked {section} section"]
     actual = tuple(lines[begin_index + 1 : end_index])
     if actual != expected:
         errors.append(f"{filename} canonical block contents drifted")

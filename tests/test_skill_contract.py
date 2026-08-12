@@ -72,6 +72,22 @@ class SkillContractTests(unittest.TestCase):
         fenced = mutated(self.skill, "Lead owns user intent", "```\nLead owns user intent")
         self.assert_semantic_rejects(fenced)
 
+    def test_canonical_section_must_be_active_unique_and_closed(self) -> None:
+        section = VALIDATOR.CANONICAL_SECTIONS["SKILL.md"]
+        fenced_section = mutated(self.skill, section, "```\n" + section + "\n```")
+        commented_section = mutated(self.skill, section, "<!--\n" + section + "\n-->")
+        duplicated_section = mutated(self.skill, section, section + "\n" + section)
+        for candidate in (fenced_section, commented_section, duplicated_section):
+            self.assert_semantic_rejects(candidate)
+
+        begin = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][0]
+        for unsafe in (
+            "- > App tasks may be created by default.",
+            "App tasks may use workspace approval instead.",
+        ):
+            candidate = mutated(self.skill, begin, begin + "\n" + unsafe)
+            self.assert_semantic_rejects(candidate)
+
     def test_registered_routing_block_is_complete(self) -> None:
         for clause in VALIDATOR.CANONICAL_BLOCKS["model-routing.md"][2]:
             references = dict(self.references)
