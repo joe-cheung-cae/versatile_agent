@@ -85,16 +85,28 @@ native mismatch, and it must carry the same canonical `task_packet_hash`.
 The parent handles the replay states `FALLBACK_PENDING`, `DONE_LUNA`,
 `DONE_TERRA`, `STOP_FAILED`, and `STOP_UNVERIFIED`; every terminal state
 returns `next_action=none`.
-Content, tool, and task failures are terminal `STOP_FAILED`; a timeout is
-`STOP_FAILED` only when route metadata is complete and non-conflicting.
-Missing, conflicting, unobservable, and unknown route evidence is
+Content, tool, and task failures are terminal `STOP_FAILED`; a timeout with
+complete, non-conflicting effective route metadata is terminal
+`STOP_FAILED`/`TIMEOUT` with `fallback_attempt=0` and `next_action=none`, and
+never authorizes Terra. An explicit same-attempt native routing rejection such
+as `requested_model_unavailable` with matching `routing_evidence` is
+`NATIVE_ROUTING_FAILURE`, moves Luna to `FALLBACK_PENDING`, and sets
+`fallback_attempt=1`/`next_action=spawn_terra`. An `unknown_exception` is
+terminal `STOP_UNVERIFIED`/`UNKNOWN_EXCEPTION` with
+`fallback_attempt=0`/`next_action=none`, even when route metadata is complete;
+missing, conflicting, or unobservable route evidence is also
 `STOP_UNVERIFIED`. No other outcome authorizes Terra.
 
-The closed forward plan returns `create_app_task` only when the App task is
-explicitly authorized in the current request; otherwise it returns
-`stop_unverified`. The App user-visible task lane is independent of native
-subagents and native fallback. The `gpt-5.6-luna` / `max` App lane used by this
-P3 development session is not repository/native effective-route evidence.
+The closed forward plan has three independent App-task outcomes: when no App
+task is requested it returns `next_action=none` with reason
+`no_app_task_requested`; when an App task is requested and explicitly
+authorized in the current request it returns `create_app_task` with reason
+`explicit_current_request_authorization`; when an App task is requested
+without that authorization it returns `stop_unverified` with reason
+`app_task_requires_explicit_current_request_authorization`. The App
+user-visible task lane is independent of native subagents and native fallback.
+The `gpt-5.6-luna` / `max` App lane used by this P3 development session is not
+repository/native effective-route evidence.
 
 ## Installation and compatibility record
 

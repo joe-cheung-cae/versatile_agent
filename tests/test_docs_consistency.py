@@ -133,10 +133,12 @@ class DocumentationConsistencyTests(unittest.TestCase):
     def test_route_fixtures_derive_parent_state_and_terminal_behavior(self) -> None:
         successful_luna = load_json(ROUTE_FIXTURE_ROOT / "luna-success.json")
         luna_mismatch = load_json(ROUTE_FIXTURE_ROOT / "luna-mismatch.json")
+        routing_rejection = load_json(ROUTE_FIXTURE_ROOT / "luna-routing-rejection.json")
         successful_terra = load_json(ROUTE_FIXTURE_ROOT / "terra-success.json")
 
         luna_state = ROUTE.decide(successful_luna)
         fallback_state = ROUTE.decide(luna_mismatch)
+        rejection_state = ROUTE.decide(routing_rejection)
         terra_state = ROUTE.decide(successful_terra)
 
         self.assertEqual(luna_state["state"], ROUTE.STATE_DONE_LUNA)
@@ -147,6 +149,14 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertEqual(fallback_state["failure_class"], "NATIVE_ROUTING_FAILURE")
         self.assertEqual(fallback_state["fallback_attempt"], 1)
         self.assertFalse(fallback_state["terminal"])
+        self.assertEqual(rejection_state["state"], ROUTE.STATE_FALLBACK_PENDING)
+        self.assertEqual(rejection_state["next_action"], "spawn_terra")
+        self.assertEqual(
+            rejection_state["failure_class"],
+            ROUTE._failure_class_for_status(routing_rejection["events"][1]["status"]),  # type: ignore[index]
+        )
+        self.assertEqual(rejection_state["fallback_attempt"], 1)
+        self.assertFalse(rejection_state["terminal"])
         self.assertEqual(terra_state["state"], ROUTE.STATE_DONE_TERRA)
         self.assertEqual(terra_state["next_action"], "none")
         self.assertTrue(terra_state["terminal"])
@@ -164,16 +174,70 @@ class DocumentationConsistencyTests(unittest.TestCase):
             self.assertIn(state, self.docs)
         for action in ("spawn_luna", "spawn_terra", "none"):
             self.assertIn(action, self.docs)
+        rejection_event = routing_rejection["events"][1]  # type: ignore[index]
+        for token in (
+            "explicit same-attempt native routing rejection",
+            rejection_event["routing_failure"],  # type: ignore[index]
+            rejection_state["state"],
+            rejection_state["failure_class"],
+            f"fallback_attempt={rejection_state['fallback_attempt']}",
+            f"next_action={rejection_state['next_action']}",
+        ):
+            self.assertIn(token, self.plan)
 
         mutated = copy.deepcopy(successful_luna)
         mutated["events"][1].update(  # type: ignore[index]
-            {"status": "content_failure", "failure_class": "TASK_FAILURE"}
+            {
+                "status": "content_failure",
+                "failure_class": ROUTE._failure_class_for_status("content_failure"),
+            }
         )
         mutated_state = ROUTE.decide(mutated)
         self.assertNotEqual(mutated_state["state"], luna_state["state"])
         self.assertEqual(mutated_state["state"], ROUTE.STATE_STOP_FAILED)
         self.assertEqual(mutated_state["next_action"], "none")
+        self.assertEqual(mutated_state["failure_class"], "TASK_FAILURE")
         self.assertEqual(mutated_state["fallback_attempt"], 0)
+        self.assertTrue(mutated_state["terminal"])
+
+        timeout = copy.deepcopy(successful_luna)
+        timeout["events"][1].update(  # type: ignore[index]
+            {
+                "status": "timeout",
+                "failure_class": ROUTE._failure_class_for_status("timeout"),
+            }
+        )
+        timeout_state = ROUTE.decide(timeout)
+        self.assertEqual(timeout_state["state"], ROUTE.STATE_STOP_FAILED)
+        self.assertEqual(timeout_state["next_action"], "none")
+        self.assertEqual(timeout_state["failure_class"], "TIMEOUT")
+        self.assertEqual(timeout_state["fallback_attempt"], 0)
+        self.assertTrue(timeout_state["terminal"])
+
+        unknown_exception = copy.deepcopy(successful_luna)
+        unknown_exception["events"][1].update(  # type: ignore[index]
+            {
+                "status": "unknown_exception",
+                "failure_class": ROUTE._failure_class_for_status("unknown_exception"),
+            }
+        )
+        unknown_state = ROUTE.decide(unknown_exception)
+        self.assertEqual(unknown_state["state"], ROUTE.STATE_STOP_UNVERIFIED)
+        self.assertEqual(unknown_state["next_action"], "none")
+        self.assertEqual(unknown_state["failure_class"], "UNKNOWN_EXCEPTION")
+        self.assertEqual(unknown_state["fallback_attempt"], 0)
+        self.assertTrue(unknown_state["terminal"])
+        for state in (timeout_state, unknown_state):
+            self.assertNotEqual(state["next_action"], "spawn_terra")
+        for token in (
+            timeout_state["state"],
+            timeout_state["failure_class"],
+            unknown_state["state"],
+            unknown_state["failure_class"],
+            "complete, non-conflicting effective route metadata",
+            "never authorizes Terra",
+        ):
+            self.assertIn(token, self.plan)
 
     def test_forward_plan_and_app_authorization_are_derived_and_non_noop(self) -> None:
         cases = load_json(FORWARD_FIXTURE)["cases"]  # type: ignore[index]
@@ -215,15 +279,24 @@ class DocumentationConsistencyTests(unittest.TestCase):
             docs_packet["task_packet_hash"],  # type: ignore[index]
         )
 
+        no_app = FORWARD.plan_forward(cases["shared_writers"])  # type: ignore[index]
         unauthorized = FORWARD.plan_forward(cases["app_unauthorized"])  # type: ignore[index]
         authorized = FORWARD.plan_forward(cases["app_authorized"])  # type: ignore[index]
+        self.assertFalse(no_app["app_task"]["requested"])
+        self.assertFalse(no_app["app_task"]["allowed"])
+        self.assertEqual(no_app["app_task"]["next_action"], "none")
+        self.assertEqual(no_app["app_task"]["reason"], "no_app_task_requested")
         self.assertFalse(unauthorized["app_task"]["allowed"])
+        self.assertTrue(unauthorized["app_task"]["requested"])
         self.assertEqual(unauthorized["app_task"]["next_action"], "stop_unverified")
         self.assertTrue(authorized["app_task"]["allowed"])
+        self.assertTrue(authorized["app_task"]["requested"])
         self.assertEqual(authorized["app_task"]["next_action"], "create_app_task")
         self.assertNotEqual(unauthorized["app_task"], authorized["app_task"])
-        for token in ("create_app_task", "stop_unverified", "current request"):
-            self.assertIn(token, self.docs)
+        for decision in (no_app["app_task"], authorized["app_task"], unauthorized["app_task"]):
+            for token in (decision["next_action"], decision["reason"]):
+                self.assertIn(token, self.plan)
+        self.assertIn("three independent App-task outcomes", self.plan)
 
         mutated = copy.deepcopy(cases["app_unauthorized"])  # type: ignore[index]
         mutated["app_task"]["current_request_authorized"] = True  # type: ignore[index]
