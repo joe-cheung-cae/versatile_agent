@@ -71,18 +71,77 @@ READ_ONLY_AGENTS = frozenset(
 )
 WRITER_AGENTS = frozenset({"implementer", "performance_profiler", "tester"})
 
-# These are deliberately closed contradictory literals. They catch an explicit
-# permission that would override a registered prohibition without attempting a
-# general natural-language polarity or intent classifier.
+# These are deliberately closed contradictory literals. They catch explicit
+# permissions or claims that would override a registered prohibition without
+# attempting a general natural-language polarity or intent classifier. Punctuation
+# variants are handled by _normalize_registered_text; the wording itself remains
+# closed and registered.
+GLOBAL_CONTRADICTORY_PERMISSION_RULES = (
+    (
+        (
+            "may make an implicit commit, push, or PR",
+            "may make an implicit commit, push, or pull request",
+            "may perform an implicit commit, push, or PR",
+            "may make an implicit commit/push/PR",
+        ),
+        "contradictory implicit commit/push/PR authorization is forbidden",
+    ),
+    (
+        (
+            "may declare the parent task complete",
+            "may declare the entire parent task complete",
+            "may declare the broader parent task complete",
+        ),
+        "contradictory whole-parent completion authorization is forbidden",
+    ),
+    (
+        (
+            "this TOML proves runtime model, effort, and sandbox effectiveness",
+            "the TOML proves runtime model, effort, and sandbox effectiveness",
+            "this configuration proves runtime model, effort, and sandbox effectiveness",
+            "the configuration proves runtime model, effort, and sandbox effectiveness",
+        ),
+        "contradictory configured runtime-effectiveness claim is forbidden",
+    ),
+    (
+        (
+            "may mutate external systems",
+            "may modify external systems",
+            "may write to external systems",
+        ),
+        "contradictory external-system mutation permission is forbidden",
+    ),
+)
 READ_ONLY_CONTRADICTORY_PERMISSION_ANCHORS = (
     "may modify assigned files",
     "may edit assigned files",
     "may write assigned files",
 )
+READ_ONLY_CONTRADICTORY_SANDBOX_ANCHORS = (
+    "this TOML declares OS-enforced read-only",
+    "the TOML declares OS-enforced read-only",
+    "this configuration declares OS-enforced read-only",
+    "the configuration declares OS-enforced read-only",
+    "this TOML makes the sandbox OS-enforced read-only",
+    "this configuration makes the sandbox OS-enforced read-only",
+)
 WRITER_CONTRADICTORY_PERMISSION_ANCHORS = (
     "may edit unowned product implementation",
     "may modify unassigned product implementation",
     "may write unowned product code",
+    "may edit unassigned product implementation",
+    "may modify unowned product implementation",
+    "may mutate unowned product implementation",
+    "may mutate unassigned product implementation",
+    "may edit product implementation outside the named paths",
+    "may modify product implementation outside the named paths",
+    "may mutate product implementation outside the named paths",
+    "may edit product implementation outside named paths",
+    "may modify product implementation outside named paths",
+    "may mutate product implementation outside named paths",
+    "may edit product code outside the named paths",
+    "may modify product code outside the named paths",
+    "may mutate product code outside the named paths",
 )
 RESEARCHER_CONTRADICTORY_FALLBACK_ANCHORS = (
     "content quality, task execution, or tool failure authorizes fallback",
@@ -496,11 +555,20 @@ def _require_exact_schema_line(
 
 
 def _operational_text(sections: Mapping[str, str]) -> str:
+    # RETURN SCHEMA is a structured handoff, not an operative permission section.
+    # Every other registered section is included so a contradiction cannot be
+    # hidden outside ALLOWED ACTIONS AND TOOLS.
     return "\n".join(
         sections.get(section_name, "")
         for section_name in AGENT_CONTRACT_HEADING_NAMES
         if section_name != "RETURN SCHEMA"
     )
+
+
+def _normalize_registered_text(text: str) -> str:
+    """Normalize only case, punctuation, and whitespace for closed literals."""
+    punctuation_normalized = re.sub(r"[^\w]+", " ", text.casefold(), flags=re.UNICODE)
+    return _compact(punctuation_normalized)
 
 
 def _reject_registered_literals(
@@ -510,9 +578,9 @@ def _reject_registered_literals(
     literals: tuple[str, ...],
     diagnostic: str,
 ) -> None:
-    compact = _compact(text).casefold()
+    compact = _normalize_registered_text(text)
     for literal in literals:
-        if literal.casefold() in compact:
+        if _normalize_registered_text(literal) in compact:
             errors.append(f"{label}: {diagnostic}: {literal}")
 
 
@@ -570,6 +638,10 @@ def _validate_common_agent_semantics(
     evidence = sections.get("EVIDENCE", "")
     stop = sections.get("STOP / ESCALATE", "")
     return_schema = sections.get("RETURN SCHEMA", "")
+    operational_text = _operational_text(sections)
+
+    for literals, diagnostic in GLOBAL_CONTRADICTORY_PERMISSION_RULES:
+        _reject_registered_literals(errors, label, operational_text, literals, diagnostic)
 
     _require_anchor(
         errors,
@@ -639,6 +711,13 @@ def _validate_read_only_agent_semantics(
         _operational_text(sections),
         READ_ONLY_CONTRADICTORY_PERMISSION_ANCHORS,
         "contradictory read-only permission is forbidden",
+    )
+    _reject_registered_literals(
+        errors,
+        label,
+        _operational_text(sections),
+        READ_ONLY_CONTRADICTORY_SANDBOX_ANCHORS,
+        "contradictory OS-enforced read-only sandbox claim is forbidden",
     )
     _require_anchor(
         errors,

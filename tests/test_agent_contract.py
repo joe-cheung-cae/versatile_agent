@@ -257,17 +257,27 @@ class AgentContractTests(unittest.TestCase):
             with self.subTest(diagnostic=diagnostic):
                 self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
 
-    def test_read_only_contradictory_write_permission_is_rejected(self) -> None:
-        source = AGENT_SOURCES["architect.toml"]
-        candidate = inject_after_heading(
-            source,
-            "ALLOWED ACTIONS AND TOOLS",
-            "This role may modify assigned files.",
+    def test_every_read_only_role_rejects_explicit_write_and_os_claim_permissions(self) -> None:
+        cases = (
+            (
+                "This role may modify assigned files.",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "THIS   TOML DECLARES OS-ENFORCED READ-ONLY!",
+                "contradictory OS-enforced read-only sandbox claim is forbidden",
+            ),
         )
-        self.assert_diagnostic(
-            self.errors_for("architect.toml", candidate),
-            "contradictory read-only permission is forbidden",
-        )
+        for name in VALIDATOR.READ_ONLY_AGENTS:
+            filename = f"{name}.toml"
+            for sentence, diagnostic in cases:
+                with self.subTest(role=name, mutation=sentence):
+                    candidate = inject_after_heading(
+                        AGENT_SOURCES[filename],
+                        "ALLOWED ACTIONS AND TOOLS",
+                        sentence,
+                    )
+                    self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
 
     def test_read_only_handoff_requires_evidence_and_sandbox_fields(self) -> None:
         source = AGENT_SOURCES["architect.toml"]
@@ -308,18 +318,24 @@ class AgentContractTests(unittest.TestCase):
                 )
 
     def test_each_writer_rejects_explicit_unowned_product_permission(self) -> None:
+        sentences = (
+            "This role may edit unowned product implementation.",
+            "This role may edit product implementation outside the named paths.",
+            "This role may mutate unassigned product implementation.",
+        )
         for name in VALIDATOR.WRITER_AGENTS:
             filename = f"{name}.toml"
-            candidate = inject_after_heading(
-                AGENT_SOURCES[filename],
-                "ALLOWED ACTIONS AND TOOLS",
-                "This role may edit unowned product implementation.",
-            )
-            with self.subTest(role=name):
-                self.assert_diagnostic(
-                    self.errors_for(filename, candidate),
-                    "contradictory unowned-product write permission is forbidden",
-                )
+            for sentence in sentences:
+                with self.subTest(role=name, mutation=sentence):
+                    candidate = inject_after_heading(
+                        AGENT_SOURCES[filename],
+                        "ALLOWED ACTIONS AND TOOLS",
+                        sentence,
+                    )
+                    self.assert_diagnostic(
+                        self.errors_for(filename, candidate),
+                        "contradictory unowned-product write permission is forbidden",
+                    )
 
     def test_every_role_group_has_registered_evidence_and_stop_anchors(self) -> None:
         for name, registered in VALIDATOR.ROLE_CONTRACT_ANCHORS.items():
@@ -364,6 +380,50 @@ class AgentContractTests(unittest.TestCase):
                 self.assert_diagnostic(
                     self.errors_for(filename, mutate_whitespace_anchor(source, disclaimer)),
                     "configured-model/runtime-effectiveness disclaimer missing",
+                )
+
+    def test_every_role_rejects_registered_contradictory_global_permissions(self) -> None:
+        cases = (
+            (
+                "This role may make an implicit commit, push, or PR.",
+                "contradictory implicit commit/push/PR authorization is forbidden",
+            ),
+            (
+                "This role may declare the parent task complete.",
+                "contradictory whole-parent completion authorization is forbidden",
+            ),
+            (
+                "This TOML proves runtime model, effort, and sandbox effectiveness.",
+                "contradictory configured runtime-effectiveness claim is forbidden",
+            ),
+            (
+                "This role may mutate external systems.",
+                "contradictory external-system mutation permission is forbidden",
+            ),
+            (
+                "This role may make an implicit commit/push/PR.",
+                "contradictory implicit commit/push/PR authorization is forbidden",
+            ),
+        )
+        for filename, source in AGENT_SOURCES.items():
+            for sentence, diagnostic in cases:
+                with self.subTest(role=Path(filename).stem, mutation=sentence):
+                    candidate = inject_after_heading(source, "ALLOWED ACTIONS AND TOOLS", sentence)
+                    self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+    def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
+        filename = "architect.toml"
+        source = AGENT_SOURCES[filename]
+        for section in VALIDATOR.AGENT_CONTRACT_HEADING_NAMES[:-1]:
+            with self.subTest(section=section):
+                candidate = inject_after_heading(
+                    source,
+                    section,
+                    "This role may mutate external systems.",
+                )
+                self.assert_diagnostic(
+                    self.errors_for(filename, candidate),
+                    "contradictory external-system mutation permission is forbidden",
                 )
 
     def test_every_registered_role_schema_rejects_a_removed_field(self) -> None:
