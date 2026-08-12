@@ -1075,6 +1075,155 @@ class AgentContractTests(unittest.TestCase):
                 self.assertNotEqual(candidate, source)
                 self.assertEqual(self.errors_for(filename, candidate), [])
 
+    def test_wrapped_suffix_matrix_rejects_all_registered_families(self) -> None:
+        cases = (
+            (
+                "global secrets",
+                "architect.toml",
+                "This role may expose",
+                "secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "global external mutation",
+                "architect.toml",
+                "This role may mutate external",
+                "systems.",
+                "contradictory external-system mutation permission is forbidden",
+            ),
+            (
+                "read-only repository write",
+                "architect.toml",
+                "This role may edit repository",
+                "files.",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "writer unowned product edit",
+                "implementer.toml",
+                "This role may edit product code outside owned",
+                "paths.",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "Luna route switching",
+                "docs_researcher_luna.toml",
+                "Content, task, or tool failure authorizes route",
+                "switching.",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+            (
+                "Terra further fallback",
+                "docs_researcher_terra.toml",
+                "This role may authorize further",
+                "fallback.",
+                "contradictory further-fallback permission is forbidden",
+            ),
+        )
+        separators = tuple(VALIDATOR.REGISTERED_SEPARATOR_RE.pattern.strip("[]"))
+        layouts = (("plain", ""), ("list", "- "), ("checked", "- [x] "))
+        continuation_indents = (("no-indent", ""), ("indented", "  "))
+        mutation_count = 0
+        for family, filename, prefix, suffix, diagnostic in cases:
+            source = AGENT_SOURCES[filename]
+            for separator in separators:
+                for layout, marker in layouts:
+                    for indent_name, indent in continuation_indents:
+                        with self.subTest(
+                            family=family,
+                            separator=separator,
+                            layout=layout,
+                            continuation=indent_name,
+                        ):
+                            payload = (
+                                f"Never state:\n{marker}unrelated{separator} {prefix}\n"
+                                f"{indent}{suffix}"
+                            )
+                            candidate = inject_after_heading(
+                                source,
+                                "ALLOWED ACTIONS AND TOOLS",
+                                payload,
+                            )
+                            self.assertNotEqual(candidate, source)
+                            self.assert_diagnostic(
+                                self.errors_for(filename, candidate),
+                                diagnostic,
+                            )
+                            mutation_count += 1
+        self.assertEqual(mutation_count, len(cases) * len(separators) * len(layouts) * len(continuation_indents))
+        self.assertEqual(mutation_count, 288)
+
+    def test_wrapped_suffix_benign_and_boundary_controls(self) -> None:
+        source = AGENT_SOURCES["architect.toml"]
+        for layout, marker in (("plain", ""), ("list", "- "), ("checked", "- [x] ")):
+            with self.subTest(control="single quoted wrapped clause", layout=layout):
+                candidate = inject_after_heading(
+                    source,
+                    "ALLOWED ACTIONS AND TOOLS",
+                    f"Never state:\n{marker}This role may expose\n  secrets.",
+                )
+                self.assertNotEqual(candidate, source)
+                self.assertEqual(self.errors_for("architect.toml", candidate), [])
+
+        controls = (
+            "Never state:\nunrelated; This role may expose\n\nsecrets.",
+            "Never state:\n- unrelated; This role may expose\n- secrets.",
+            "Never state:\n- [x] unrelated; This role may expose\n- [ ] secrets.",
+        )
+        for payload in controls:
+            with self.subTest(control=payload):
+                candidate = inject_after_heading(source, "ALLOWED ACTIONS AND TOOLS", payload)
+                self.assertNotEqual(candidate, source)
+                self.assertEqual(self.errors_for("architect.toml", candidate), [])
+
+    def test_wrapped_suffix_case_and_punctuation_variants(self) -> None:
+        cases = (
+            (
+                "architect.toml",
+                "THIS ROLE MAY EXPOSE",
+                "SECRETS!",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "THIS ROLE MAY MUTATE EXTERNAL",
+                "SYSTEMS!",
+                "contradictory external-system mutation permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "THIS ROLE MAY EDIT REPOSITORY",
+                "FILES!",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "THIS ROLE MAY EDIT PRODUCT CODE OUTSIDE OWNED",
+                "PATHS!",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "docs_researcher_luna.toml",
+                "CONTENT, TASK, OR TOOL FAILURE AUTHORIZES ROUTE",
+                "SWITCHING!",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+            (
+                "docs_researcher_terra.toml",
+                "THIS ROLE MAY AUTHORIZE FURTHER",
+                "FALLBACK!",
+                "contradictory further-fallback permission is forbidden",
+            ),
+        )
+        for filename, prefix, suffix, diagnostic in cases:
+            with self.subTest(role=filename):
+                candidate = inject_after_heading(
+                    AGENT_SOURCES[filename],
+                    "ALLOWED ACTIONS AND TOOLS",
+                    f"Never state:\n- [X] unrelated; {prefix}\n{suffix}",
+                )
+                self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
         source = AGENT_SOURCES[filename]

@@ -903,7 +903,9 @@ def _registered_neutral_label_remainder(text: str) -> tuple[str, ...] | None:
     return None
 
 
-def _registered_separator_remainders(text: str) -> tuple[tuple[str, ...], ...]:
+def _registered_separator_remainders(
+    text: str, continuation_lines: tuple[str, ...] = ()
+) -> tuple[tuple[str, ...], ...]:
     """Return direct candidates after registered punctuation separators.
 
     This is a closed tokenizer rule: a suffix is considered independently so
@@ -921,7 +923,13 @@ def _registered_separator_remainders(text: str) -> tuple[tuple[str, ...], ...]:
             for introducer, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS
         ):
             continue
-        remainder = _registered_tokens(stripped[match.end() :])
+        remainder_text = stripped[match.end() :]
+        if not REGISTERED_SEPARATOR_RE.search(remainder_text):
+            for continuation in continuation_lines:
+                remainder_text = f"{remainder_text} {continuation.strip()}".strip()
+                if REGISTERED_SEPARATOR_RE.search(remainder_text):
+                    break
+        remainder = _registered_tokens(remainder_text)
         if remainder:
             remainders.append(remainder)
     return tuple(remainders)
@@ -982,16 +990,29 @@ def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
                 if neutral_remainder is not None:
                     clauses.append(neutral_remainder)
 
-        for line_index, line in paragraph:
-            if _registered_context_before_line(lines, line_index):
-                # The introducer protects only the immediate clause.  Keep
-                # scanning this physical line/list item after a registered
-                # punctuation boundary for a later direct contradiction.
-                clauses.extend(_registered_separator_remainders(line))
-                continue
-            neutral_remainder = _registered_neutral_label_remainder(line)
-            clauses.append(neutral_remainder if neutral_remainder is not None else _registered_tokens(line))
-            clauses.extend(_registered_separator_remainders(line))
+        for block in blocks:
+            block_end = block[-1][0]
+            for line_index, line in block:
+                continuation_lines = tuple(
+                    lines[next_index]
+                    for next_index in range(line_index + 1, block_end + 1)
+                )
+                if _registered_context_before_line(lines, line_index):
+                    # The introducer protects only the immediate clause. Keep
+                    # scanning suffixes and their ordinary wrapped continuations.
+                    clauses.extend(
+                        _registered_separator_remainders(line, continuation_lines)
+                    )
+                    continue
+                neutral_remainder = _registered_neutral_label_remainder(line)
+                clauses.append(
+                    neutral_remainder
+                    if neutral_remainder is not None
+                    else _registered_tokens(line)
+                )
+                clauses.extend(
+                    _registered_separator_remainders(line, continuation_lines)
+                )
     return tuple(clauses)
 
 
