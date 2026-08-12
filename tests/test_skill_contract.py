@@ -524,6 +524,68 @@ class SkillContractTests(unittest.TestCase):
                     f"missing diagnostic {diagnostic!r}: {errors}",
                 )
 
+    def test_ascii_hyphen_suffixes_are_checked_on_skill_and_agent_paths(self) -> None:
+        cases = (
+            (
+                "app-legal-then-contradiction",
+                "App tasks cannot be created without authorization - App tasks could be created without authorization.",
+                "App task creation without explicit authorization",
+                "architect.toml",
+            ),
+            (
+                "failure-legal-then-contradiction",
+                "Content failures do not authorize Terra fallback - Content failures could authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in cases:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+    def test_ascii_hyphen_boundary_stays_out_of_tokens_and_hard_boundaries(self) -> None:
+        skill_controls = (
+            "Quoted-App tasks could be created without authorization.",
+            "well-known prose about App tasks could be created without authorization.",
+            "-",
+            "- ordinary list marker",
+            "App tasks could\nbe created without authorization.",
+            "- App tasks could\n- be created without authorization.",
+            "App tasks could\n\nbe created without authorization.",
+            "```text\nApp tasks could - be created without authorization.\n```",
+        )
+        for sentence in skill_controls:
+            with self.subTest(path="Skill", control=sentence):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+
+        agent_controls = (
+            "Quoted-App tasks could be created without authorization.",
+            "well-known prose about App tasks could be created without authorization.",
+            "-",
+            "- ordinary list marker",
+            "App tasks could\nbe created without authorization.",
+            "- App tasks could\n- be created without authorization.",
+            "App tasks could\n\nbe created without authorization.",
+        )
+        for sentence in agent_controls:
+            with self.subTest(path="agent", control=sentence):
+                self.assertEqual(self.agent_errors("architect.toml", sentence), [])
+
+        references = dict(self.references)
+        references["workflow.md"] += "\n```text\nContent failures could authorize - Terra fallback.\n```\n"
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(self.skill, references, self.ui),
+            [],
+        )
+
     def test_polarity_keeps_hard_boundaries_and_negation_local(self) -> None:
         app_diagnostic = "App task creation without explicit authorization"
         failure_diagnostic = "failure authorization of Terra fallback"

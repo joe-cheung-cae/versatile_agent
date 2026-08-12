@@ -881,6 +881,10 @@ REGISTERED_LIST_MARKER_RE = re.compile(
     r"(?:\[[ xX]\](?:[ \t]+|$))?"
 )
 REGISTERED_SEPARATOR_RE = re.compile(r"[.!?;:：—–]")
+# ASCII hyphen-minus is a suffix boundary only when it is a standalone,
+# space-delimited dash.  Hyphens inside ordinary tokens and stripped list
+# markers must not create a new registered clause candidate.
+REGISTERED_POLARITY_BOUNDARY_RE = re.compile(r"[,.!?;:：—–]|(?<=\s)-(?=\s)")
 
 # These two predicates are the only cross-document polarity rules in this
 # validator.  They are deliberately registered token sequences rather than a
@@ -1073,8 +1077,7 @@ def _registered_polarity_segments(line: str) -> tuple[tuple[tuple[str, ...], boo
     if complete:
         segments.append((complete, False))
 
-    boundary_pattern = re.compile(r"[,.!?;:：—–]")
-    for match in boundary_pattern.finditer(stripped):
+    for match in REGISTERED_POLARITY_BOUNDARY_RE.finditer(stripped):
         prefix_tokens = _registered_tokens(stripped[: match.start()])
         suffix = _registered_tokens(stripped[match.end() :])
         if not suffix:
