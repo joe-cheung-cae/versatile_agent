@@ -978,6 +978,9 @@ REGISTERED_QUOTING_INTRODUCERS = frozenset(
         ("do", "not", "claim"),
         ("must", "not", "say"),
         ("must", "not", "authorize"),
+        ("quoted",),
+        ("quote",),
+        ("example",),
     }
 )
 REGISTERED_POLARITY_DIAGNOSTICS = {
@@ -1056,31 +1059,31 @@ def _registered_sequence_at(
 
 
 def _registered_polarity_segments(line: str) -> tuple[tuple[tuple[str, ...], bool], ...]:
-    """Split one physical line into bounded clauses and protected quote suffixes.
+    """Return complete-line and bounded suffix candidates for one line.
 
-    The split is intentionally line-local.  A registered quoting introducer
-    protects only the first clause after its colon; punctuation or a later
-    conjunction starts a new candidate.  This is a source dialect rule, not a
-    general English parser.
+    The complete physical line is retained so punctuation inside a registered
+    modal/action/tail cannot break the predicate.  Suffixes after punctuation
+    are also scanned so a legal first clause cannot hide a later contradiction.
+    No candidate is formed across physical lines, paragraphs, list items,
+    fences, or sections; this is a source-dialect rule, not English NLP.
     """
     stripped = _strip_registered_list_marker(line).strip()
     segments: list[tuple[tuple[str, ...], bool]] = []
-    for sentence in re.split(r"[.!?;—–]+", stripped):
-        if not sentence.strip():
+    complete = _registered_tokens(stripped)
+    if complete:
+        segments.append((complete, False))
+
+    boundary_pattern = re.compile(r"[,.!?;:：—–]")
+    for match in boundary_pattern.finditer(stripped):
+        prefix_tokens = _registered_tokens(stripped[: match.start()])
+        suffix = _registered_tokens(stripped[match.end() :])
+        if not suffix:
             continue
-        colon_parts = re.split(r"[:：]", sentence)
-        if len(colon_parts) == 1:
-            tokens = _registered_tokens(sentence)
-            if tokens:
-                segments.append((tokens, False))
-            continue
-        prefix_tokens = _registered_tokens(colon_parts[0])
-        if prefix_tokens:
-            segments.append((prefix_tokens, False))
-        for part_index, part in enumerate(colon_parts[1:]):
-            tokens = _registered_tokens(part)
-            if tokens:
-                segments.append((tokens, part_index == 0 and prefix_tokens in REGISTERED_QUOTING_INTRODUCERS))
+        protected = (
+            match.group(0) in (":", "：")
+            and prefix_tokens in REGISTERED_QUOTING_INTRODUCERS
+        )
+        segments.append((suffix, protected))
     return tuple(segments)
 
 
