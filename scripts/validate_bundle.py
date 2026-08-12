@@ -149,6 +149,7 @@ CONTRACT_CONTRADICTION_RULES: tuple[
             re.compile(r"\bunless\s+(?:a\s+)?(?:prior|previous|earlier)\s+request\s+authori[sz]ation\b"),
             re.compile(r"\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b\s+(?:is\s+)?(?:also\s+)?(?:acceptable|accepted|sufficient|enough)\b"),
             re.compile(r"\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b\s+(?:is\s+)?(?:allowed|permitted)\b"),
+            re.compile(r"\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b\s+suffices\b"),
             re.compile(r"\b(?:app\s+task\s+creation|app(?:\s+user-visible)?\s+tasks?)\b[^.!?;:]{0,60}\b(?:accept|accepts|allow|allows|may\s+use)\b[^.!?;:]{0,50}\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b"),
             re.compile(r"\bcurrent[-\s]+(?:user[-\s]+)?request\s+authori[sz]ation\b\s+(?:is\s+)?(?:optional|unnecessary)\b"),
             re.compile(r"\b(?:current[-\s]+(?:user[-\s]+)?request\s+)?authori[sz]ation\b\s+(?:may|can)\s+be\s+omitted\b"),
@@ -163,8 +164,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
     (
         "Non-routing failures may authorize Terra or fallback",
         (
-            re.compile(rf"\b{FAILURE_SOURCE}\s+(?:may\s+)?{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
-            re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
+            re.compile(rf"\b{FAILURE_SOURCE}\s+(?:(?:may|can)\s+)?{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
+            re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are|can\s+be)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
         ),
         (
             re.compile(rf"\b{FAILURE_SOURCE}\s+(?:never|does\s+not|do\s+not|cannot|can't)\s+{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
@@ -229,7 +230,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         "Probe, manifest, or App task proves effective route",
         (
             re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:proves?|establishes?|demonstrates?|confirms?)\s+{EFFECTIVE_ROUTE}\b"),
-            re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
+            re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:may|can)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
+            re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are|can\s+be)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
         ),
         (
             re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
@@ -239,8 +241,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
     (
         "Skill changes parent model or permissions",
         (
-            re.compile(r"\b(?:this\s+)?skill\s+(?:changes?|switches?|controls?|overrides?)\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
-            re.compile(r"\b(?:the\s+)?(?:parent\s+model|permissions?)\s+(?:is|are)\s+(?:changed|switched|controlled|overridden)\s+by\s+(?:this\s+)?skill\b"),
+            re.compile(r"\b(?:this\s+)?skill\s+(?:(?:changes?|switches?|controls?|overrides?)|can\s+(?:change|switch|control|override))\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
+            re.compile(r"\b(?:the\s+)?(?:parent\s+model|permissions?)\s+(?:is|are|can\s+be)\s+(?:changed|switched|controlled|overridden)\s+by\s+(?:this\s+)?skill\b"),
         ),
         (
             re.compile(r"\b(?:this\s+)?skill\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:change|switch|control|override)\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),

@@ -254,7 +254,15 @@ class SkillContractTests(unittest.TestCase):
             "The effective native route is proven by the installation manifest.",
             "This Skill switches the parent model.",
             "The parent model is switched by this Skill.",
+            "Content failures can authorize Terra fallback.",
+            "Terra fallback can be authorized by content failures.",
+            "The installation manifest can prove the effective native route.",
+            "The effective native route can be proven by the installation manifest.",
+            "This Skill can switch the parent model.",
+            "The parent model can be switched by this Skill.",
+            "Implicit consent suffices for App tasks.",
             "The App task cannot be created without explicit authorization, but content failures authorize Terra fallback.",
+            "Content failures never authorize Terra fallback, but Terra fallback can be authorized by content failures.",
         )
         for addition in rejected:
             with self.subTest(sentence=addition):
@@ -275,6 +283,13 @@ class SkillContractTests(unittest.TestCase):
             "The effective route is not proven by the manifest.",
             "This Skill does not switch the parent model.",
             "The parent model is not switched by this Skill.",
+            "Content failures cannot authorize Terra fallback.",
+            "Terra fallback cannot be authorized by content failures.",
+            "The installation manifest cannot prove the effective native route.",
+            "The effective native route cannot be proven by the installation manifest.",
+            "This Skill cannot switch the parent model.",
+            "The parent model cannot be switched by this Skill.",
+            "Implicit consent does not suffice for App tasks.",
         )
         for addition in accepted:
             with self.subTest(sentence=addition):
