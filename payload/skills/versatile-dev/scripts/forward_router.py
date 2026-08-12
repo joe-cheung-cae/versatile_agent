@@ -125,14 +125,27 @@ def _canonical_repo_path(value: Any, location: str) -> str:
     return path
 
 
+def portable_collision_key(path: str) -> str:
+    """Return the portable repo-relative identity used for file collisions.
+
+    The key deliberately applies NFC normalization followed by Unicode
+    casefolding.  It is conservative for case-insensitive worktrees: paths
+    with the same key are treated as aliases even when a case-sensitive host
+    would keep them distinct.
+    """
+
+    return unicodedata.normalize("NFC", path).casefold()
+
+
 def _canonical_path_list(value: Any, location: str, *, allow_empty: bool = True) -> list[str]:
     if not isinstance(value, list):
         raise _error(location, "must be a list")
     if not allow_empty and not value:
         raise _error(location, "must not be empty")
     result = [_canonical_repo_path(item, f"{location}[{index}]") for index, item in enumerate(value)]
-    if len(result) != len(set(result)):
-        raise _error(location, "must not contain duplicate entries")
+    collision_keys = [portable_collision_key(path) for path in result]
+    if len(collision_keys) != len(set(collision_keys)):
+        raise _error(location, "must not contain portable path aliases (NFC+casefold collision key)")
     return result
 
 
@@ -153,6 +166,7 @@ def _validate_packet_shape(packet: Any) -> dict[str, Any]:
     _require_string(packet["request"], "packet.request")
     packet_files = _canonical_path_list(packet["files"], "packet.files")
     packet_file_set = set(packet_files)
+    packet_file_keys = {portable_collision_key(path) for path in packet_files}
 
     writers = packet["writers"]
     if not isinstance(writers, list):
@@ -170,8 +184,11 @@ def _validate_packet_shape(packet: Any) -> dict[str, Any]:
             raise _error(f"{location}.writer_id", "is not a writable forward role")
         writer_ids.add(writer_id)
         writer_files = _canonical_path_list(writer["files"], f"{location}.files", allow_empty=False)
+        writer_file_keys = {portable_collision_key(path) for path in writer_files}
+        if not writer_file_keys.issubset(packet_file_keys):
+            raise _error(f"{location}.files", "must be members of packet.files by portable collision key")
         if not set(writer_files).issubset(packet_file_set):
-            raise _error(f"{location}.files", "must be exact members of packet.files")
+            raise _error(f"{location}.files", "must be exact canonical members of packet.files")
         if writer_id == "tester" and any(
             not path.startswith(TEST_PATH_PREFIX) for path in writer_files
         ):
@@ -241,15 +258,20 @@ def _writer_batches(writers: list[dict[str, Any]]) -> list[list[str]]:
     batches: list[list[str]] = []
     for writer in writers:
         files = writer["files"]
+        collision_keys = [portable_collision_key(file_name) for file_name in files]
         batch = max(
-            (last_batch_by_file[file_name] + 1 for file_name in files if file_name in last_batch_by_file),
+            (
+                last_batch_by_file[collision_key] + 1
+                for collision_key in collision_keys
+                if collision_key in last_batch_by_file
+            ),
             default=0,
         )
         while len(batches) <= batch:
             batches.append([])
         batches[batch].append(writer["writer_id"])
-        for file_name in files:
-            last_batch_by_file[file_name] = batch
+        for collision_key in collision_keys:
+            last_batch_by_file[collision_key] = batch
     return batches
 
 

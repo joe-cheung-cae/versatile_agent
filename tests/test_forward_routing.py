@@ -277,11 +277,27 @@ class ForwardRoutingTests(unittest.TestCase):
                 with self.assertRaises(FORWARD.ForwardRouteError):
                     FORWARD.validate_packet(packet)
 
+        aliases = (
+            ("tests/A.py", "tests/a.py"),
+            ("tests/Straße.py", "tests/STRASSE.py"),
+        )
+        for first, second in aliases:
+            with self.subTest(alias=(first, second)):
+                packet = copy.deepcopy(CASES["simple"])
+                packet["files"] = [first, second]
+                self.assertNotEqual(packet, CASES["simple"])
+                with self.assertRaisesRegex(
+                    FORWARD.ForwardRouteError,
+                    "portable path aliases",
+                ):
+                    FORWARD.validate_packet(packet)
+
         cases = (
             {"writer_id": "implementer", "files": ["src/not-listed.py"]},
             {"writer_id": "tester", "files": ["src/implementation.py"]},
             {"writer_id": "performance_profiler", "files": ["src/profile.py"]},
             {"writer_id": "implementer", "files": ["src/a.py", "src/a.py"]},
+            {"writer_id": "implementer", "files": ["tests/A.py", "tests/a.py"]},
         )
         for writer in cases:
             with self.subTest(writer=writer):
@@ -291,6 +307,34 @@ class ForwardRoutingTests(unittest.TestCase):
                 self.assertNotEqual(packet, CASES["simple"])
                 with self.assertRaises(FORWARD.ForwardRouteError):
                     FORWARD.validate_packet(packet)
+
+    def test_writer_overlap_uses_nfc_casefold_collision_key_defensively(self) -> None:
+        self.assertEqual(
+            FORWARD.portable_collision_key("tests/Straße.py"),
+            FORWARD.portable_collision_key("tests/STRASSE.py"),
+        )
+        self.assertNotEqual(
+            FORWARD.portable_collision_key("tests/alpha.py"),
+            FORWARD.portable_collision_key("tests/beta.py"),
+        )
+
+        ascii_aliases = [
+            {"writer_id": "implementer", "files": ["tests/A.py"]},
+            {"writer_id": "tester", "files": ["tests/a.py"]},
+        ]
+        unicode_aliases = [
+            {"writer_id": "implementer", "files": ["tests/Straße.py"]},
+            {"writer_id": "tester", "files": ["tests/STRASSE.py"]},
+        ]
+        for writers in (ascii_aliases, unicode_aliases):
+            with self.subTest(writers=writers):
+                self.assertEqual(FORWARD._writer_batches(writers), [["implementer"], ["tester"]])
+
+        distinct = [
+            {"writer_id": "implementer", "files": ["tests/alpha.py"]},
+            {"writer_id": "tester", "files": ["tests/beta.py"]},
+        ]
+        self.assertEqual(FORWARD._writer_batches(distinct), [["implementer", "tester"]])
 
     def test_cli_plan_replay_and_duplicate_json_inputs_are_strict(self) -> None:
         environment = os.environ.copy()
@@ -360,6 +404,28 @@ class ForwardRoutingTests(unittest.TestCase):
             self.assertEqual(duplicate_route_process.returncode, 2)
             self.assertEqual(duplicate_route_process.stdout, "")
             self.assertIn("duplicate JSON member", duplicate_route_process.stderr)
+
+            for first, second in (("tests/A.py", "tests/a.py"), ("tests/Straße.py", "tests/STRASSE.py")):
+                with self.subTest(cli_alias=(first, second)):
+                    alias_packet = copy.deepcopy(CASES["simple"])
+                    alias_packet["files"] = [first, second]
+                    alias_path = directory_path / "portable-alias-packet.json"
+                    alias_path.write_text(
+                        json.dumps(alias_packet, ensure_ascii=False),
+                        encoding="utf-8",
+                    )
+                    alias_process = subprocess.run(
+                        [sys.executable, str(FORWARD_HELPER), "plan", str(alias_path)],
+                        cwd=ROOT,
+                        env=environment,
+                        text=True,
+                        capture_output=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(alias_packet, CASES["simple"])
+                    self.assertEqual(alias_process.returncode, 2)
+                    self.assertEqual(alias_process.stdout, "")
+                    self.assertIn("portable path aliases", alias_process.stderr)
 
     def test_workflow_references_the_offline_helper_after_parent_classification(self) -> None:
         workflow = (ROOT / "payload/skills/versatile-dev/references/workflow.md").read_text(
