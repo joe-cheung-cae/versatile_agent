@@ -717,6 +717,42 @@ class AgentContractTests(unittest.TestCase):
                 self.assertNotEqual(candidate, source)
                 self.assertEqual(self.errors_for(filename, candidate), [], insertion)
 
+        direct_after_unrelated_context = (
+            "Do not say something untrue.\n- This role may expose secrets.\n",
+            "Example unrelated prose.\n- This role may expose secrets.\n",
+            "Never state unrelated prose\nThis role may expose secrets.\n",
+            "Never state:\n\nThis role may expose secrets.\n",
+        )
+        for insertion in direct_after_unrelated_context:
+            with self.subTest(insertion=insertion):
+                candidate, count = source.replace(
+                    existing_line,
+                    existing_line + insertion,
+                    1,
+                ), source.count(existing_line)
+                self.assertEqual(count, 1)
+                self.assertNotEqual(candidate, source)
+                self.assert_diagnostic(
+                    self.errors_for(filename, candidate),
+                    "contradictory secret-disclosure permission is forbidden",
+                )
+
+        exact_introducer_controls = (
+            "Never state:\nThis role may expose secrets.\n",
+            "Never state：\n- This role may expose secrets.\n",
+            "Do not say;\n- This role may expose secrets.\n",
+        )
+        for insertion in exact_introducer_controls:
+            with self.subTest(insertion=insertion):
+                candidate, count = source.replace(
+                    existing_line,
+                    existing_line + insertion,
+                    1,
+                ), source.count(existing_line)
+                self.assertEqual(count, 1)
+                self.assertNotEqual(candidate, source)
+                self.assertEqual(self.errors_for(filename, candidate), [], insertion)
+
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
         source = AGENT_SOURCES[filename]

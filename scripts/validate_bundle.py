@@ -792,18 +792,21 @@ REGISTERED_NEUTRAL_LABEL_PREFIXES = (
     ("policy",),
     ("contract",),
 )
-REGISTERED_NON_DIRECT_CONTEXT_PREFIXES = (
-    ("never", "state"),
-    ("do", "not", "say"),
-    ("never", "authorize"),
-    ("do", "not", "authorize"),
-    ("never", "claim"),
-    ("do", "not", "claim"),
-    ("must", "not", "say"),
-    ("must", "not", "authorize"),
-    ("quoted",),
-    ("quote",),
-    ("example",),
+# A cross-line non-direct context is registered only for an exact introducer
+# line ending in one of these delimiters.  A prefix match would let unrelated
+# prose such as "Never state something unrelated" hide a later direct clause.
+REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS = (
+    (("never", "state"), (":", "：", ";")),
+    (("do", "not", "say"), (":", "：", ";")),
+    (("never", "authorize"), (":", "：", ";")),
+    (("do", "not", "authorize"), (":", "：", ";")),
+    (("never", "claim"), (":", "：", ";")),
+    (("do", "not", "claim"), (":", "：", ";")),
+    (("must", "not", "say"), (":", "：", ";")),
+    (("must", "not", "authorize"), (":", "：", ";")),
+    (("quoted",), (":", "：", ";")),
+    (("quote",), (":", "：", ";")),
+    (("example",), (":", "：", ";")),
 )
 REGISTERED_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)")
 
@@ -830,15 +833,17 @@ def _registered_neutral_label_remainder(text: str) -> tuple[str, ...] | None:
 
 def _registered_context_before_line(lines: list[str], line_index: int) -> bool:
     previous = line_index - 1
-    while previous >= 0 and not lines[previous].strip():
-        previous -= 1
-    if previous < 0:
+    if previous < 0 or not lines[previous].strip():
         return False
-    previous_tokens = _registered_tokens(lines[previous])
-    return any(
-        previous_tokens[: len(prefix)] == prefix
-        for prefix in REGISTERED_NON_DIRECT_CONTEXT_PREFIXES
-    )
+    previous_line = _strip_registered_list_marker(lines[previous]).strip()
+    for prefix, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS:
+        for delimiter in delimiters:
+            if not previous_line.endswith(delimiter):
+                continue
+            introducer = previous_line[: -len(delimiter)].strip()
+            if _registered_tokens(introducer) == prefix:
+                return True
+    return False
 
 
 def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
