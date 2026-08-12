@@ -306,7 +306,7 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     peer_headings = [
         i
         for i, line in enumerate(lines)
-        if flags[i] and re.fullmatch(r"#{1,2}[ \t]+.+", line)
+        if flags[i] and re.fullmatch(r"#{1,2}(?:$|[ \t]+.*)", line)
     ]
     next_peer = next((i for i in peer_headings if i > section_index), None)
     if next_peer is not None and end_index >= next_peer:

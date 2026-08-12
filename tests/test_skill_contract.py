@@ -127,6 +127,31 @@ class SkillContractTests(unittest.TestCase):
         self.assert_semantic_rejects(
             self.skill.replace("<!-- BEGIN versatile-dev canonical contract -->", "## Inserted peer\n<!-- BEGIN versatile-dev canonical contract -->", 1)
         )
+        empty_peers = ("#", "##", "#   ", "##\t")
+        for peer in empty_peers:
+            skill_candidate = self.skill.replace(
+                "## Contract\n",
+                "## Contract\n" + peer + "\n",
+                1,
+            )
+            self.assert_semantic_rejects(skill_candidate)
+
+            routing_candidate = self.routing.replace(
+                "## Canonical routing contract\n",
+                "## Canonical routing contract\n" + peer + "\n",
+                1,
+            )
+            references = dict(self.references)
+            references["model-routing.md"] = routing_candidate
+            self.assert_semantic_rejects(self.skill, references)
+
+        fenced_empty = self.skill.replace(
+            "## Contract\n",
+            "## Contract\n```\n##\n```\n",
+            1,
+        )
+        self.assertEqual(VALIDATOR.semantic_contract_violations(fenced_empty, self.references, self.ui), [])
+        self.assertEqual(VALIDATOR.canonical_block_violations("model-routing.md", self.routing), [])
 
         routing_block = block(self.routing, "model-routing.md")
         without_routing_block = self.routing.replace(routing_block + "\n", "", 1)
