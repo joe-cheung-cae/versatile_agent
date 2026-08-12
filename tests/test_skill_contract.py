@@ -132,7 +132,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_reference_links_allow_fragments_and_external_only(self) -> None:
         references = dict(self.references)
-        references["workflow.md"] += "\n[local state](#state-model)\n[external](https://example.com)\n"
+        references["workflow.md"] += "\n[local state](#state-model)\n[http](http://example.com)\n[https](HTTPS://example.com)\n[mail](mailto:test@example.com)\n"
         self.assertEqual(VALIDATOR.reference_topology_violations(self.skill, references, SKILL_PATH), [])
         for bad in (
             "[nested](model-routing.md)",
@@ -145,9 +145,23 @@ class SkillContractTests(unittest.TestCase):
             bad_refs = dict(self.references)
             bad_refs["workflow.md"] += "\n" + bad
             self.assert_topology_rejects(self.skill, bad_refs)
+        for scheme in ("file:model-routing.md", "javascript:alert(1)", "data:text/plain,x", "gopher://example.com"):
+            bad_refs = dict(self.references)
+            bad_refs["workflow.md"] += f"\n[unsupported]({scheme})\n"
+            self.assert_topology_rejects(self.skill, bad_refs)
+            self.assertFalse(VALIDATOR._external_or_fragment(scheme))
 
     def test_task_contract_exact_topology_and_mutations(self) -> None:
         self.assertEqual(VALIDATOR.task_contract_violations(self.task), [])
+        exact_failures = (
+            "##\tExtra\n",
+            "- > paragraph\n  >\n    > ## Extra\n",
+            "> ```\n> ordinary\n> ```\n",
+            "    ```\nordinary\n    ```\n",
+            "> Extra\n> ---\n",
+        )
+        for suffix in exact_failures:
+            self.assertTrue(VALIDATOR.task_contract_violations(self.task + "\n" + suffix), suffix)
         for heading in (
             "# Subagent task contract",
             "## 1. Objective",

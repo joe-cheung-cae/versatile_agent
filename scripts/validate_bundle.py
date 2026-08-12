@@ -327,7 +327,7 @@ def _inline_tokens(line: str) -> list[tuple[int, int, str, str]]:
 
 def _external_or_fragment(target: str) -> bool:
     target = target.strip().strip("<>")
-    return target.startswith("#") or bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target))
+    return target.startswith("#") or bool(re.match(r"(?i)^(?:https?://|mailto:)", target))
 
 
 def _has_link_syntax_without_token(line: str) -> bool:
@@ -398,6 +398,35 @@ def _task_heading(line: str) -> tuple[int, str] | None:
     return len(match.group(1)), match.group(2)
 
 
+_ATX_SOURCE_RE = re.compile(
+    r"^(?P<prefix>[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}\.)[ \t]+))*)"
+    r"(?P<marks>#{1,6})(?P<separator>[ \t]+|$)(?P<title>.*)$"
+)
+_SOURCE_PREFIX_RE = re.compile(
+    r"^(?P<prefix>[ \t]*(?:(?:>[ \t]*)|(?:(?:[-+*]|\d{1,9}\.)[ \t]+))*)"
+    r"(?P<content>.*)$"
+)
+
+
+def _source_atx_heading(line: str) -> tuple[str, int, str, str] | None:
+    match = _ATX_SOURCE_RE.fullmatch(line)
+    if match is None:
+        return None
+    return (
+        match.group("prefix"),
+        len(match.group("marks")),
+        match.group("separator"),
+        match.group("title"),
+    )
+
+
+def _source_prefix_parts(line: str) -> tuple[str, str]:
+    match = _SOURCE_PREFIX_RE.fullmatch(line)
+    if match is None:
+        return "", line
+    return match.group("prefix"), match.group("content")
+
+
 def task_contract_violations(text: str) -> list[str]:
     expected_h1 = "# Subagent task contract"
     expected_h2 = [
@@ -409,21 +438,19 @@ def task_contract_violations(text: str) -> list[str]:
     ]
     lines = text.splitlines()
     errors: list[str] = []
-    if any(_fence_start(line) is not None for line in lines):
+    if any(re.search(r"(?:`{3,}|~{3,})", line) for line in lines):
         errors.append("task-contract.md does not allow fenced code")
     if re.search(r"<h[1-6](?:\s|>)", text, re.IGNORECASE):
         errors.append("task-contract.md does not allow raw HTML headings")
     headings: list[tuple[int, str, int]] = []
     for index, line in enumerate(lines):
-        heading = _task_heading(line)
-        if heading is not None:
-            headings.append((*heading, index))
-        elif re.match(r"^\s+(?:#{1,6})(?:\s|$)", line) or re.match(r"^(?:>|(?:[-+*]|\d+\.)\s+).*#{1,6}(?:\s|$)", line):
-            errors.append(f"task-contract.md:{index + 1} contains an indented or containerized heading")
-        elif re.fullmatch(r"#{1,6}", line):
-            headings.append((len(line), "", index))
-        if "`" in line and re.search(r"#{1,6}(?:\s|$)", line):
-            errors.append(f"task-contract.md:{index + 1} contains a masked heading-like construct")
+        source_heading = _source_atx_heading(line)
+        if source_heading is not None:
+            prefix, level, separator, title = source_heading
+            if prefix or separator != " ":
+                errors.append(f"task-contract.md:{index + 1} contains a noncanonical or containerized heading")
+            if not prefix:
+                headings.append((level, title, index))
     if lines.count(expected_h1) != 1:
         errors.append("task-contract.md must contain exactly one exact H1")
     if any(level == 1 and title != "Subagent task contract" for level, title, _ in headings):
@@ -434,10 +461,12 @@ def task_contract_violations(text: str) -> list[str]:
     if any(level != 1 and level != 2 for level, _, _ in headings):
         errors.append("task-contract.md must not contain any H3-H6 heading")
     for index in range(1, len(lines)):
-        if re.fullmatch(r"(?:=+|-+)\s*", lines[index]) and lines[index - 1].strip():
-            previous = lines[index - 1]
-            if not re.match(r"^(?:[ \t]+|>)", previous):
-                errors.append(f"task-contract.md:{index + 1} contains a Setext heading")
+        prefix, content = _source_prefix_parts(lines[index])
+        if not re.fullmatch(r"(?:=+|-+)[ \t]*", content):
+            continue
+        previous_prefix, previous_content = _source_prefix_parts(lines[index - 1])
+        if prefix == previous_prefix and previous_content.strip():
+            errors.append(f"task-contract.md:{index + 1} contains a Setext heading")
     return errors
 
 
