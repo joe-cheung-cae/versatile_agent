@@ -264,7 +264,15 @@ class AgentContractTests(unittest.TestCase):
                 "contradictory read-only permission is forbidden",
             ),
             (
+                "This role may edit repository files.",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
                 "THIS   TOML DECLARES OS-ENFORCED READ-ONLY!",
+                "contradictory OS-enforced read-only sandbox claim is forbidden",
+            ),
+            (
+                "This TOML guarantees OS-enforced read-only.",
                 "contradictory OS-enforced read-only sandbox claim is forbidden",
             ),
         )
@@ -322,6 +330,8 @@ class AgentContractTests(unittest.TestCase):
             "This role may edit unowned product implementation.",
             "This role may edit product implementation outside the named paths.",
             "This role may mutate unassigned product implementation.",
+            "This role may edit product code outside owned paths.",
+            "This role may edit product implementation outside assigned paths.",
         )
         for name in VALIDATOR.WRITER_AGENTS:
             filename = f"{name}.toml"
@@ -393,6 +403,11 @@ class AgentContractTests(unittest.TestCase):
                 "destructive operation permission variant",
                 "This role may perform destructive operations.",
                 "contradictory destructive-command/operation permission is forbidden",
+            ),
+            (
+                "harmful external exploitation permission",
+                "This role may perform harmful external exploitation.",
+                "contradictory harmful-exploitation permission is forbidden",
             ),
             (
                 "secret exposure permission",
@@ -508,6 +523,26 @@ class AgentContractTests(unittest.TestCase):
                 "This TOML proves observed runtime behavior.",
                 "contradictory configured runtime-effectiveness claim is forbidden",
             ),
+            (
+                "architect.toml",
+                "This role may edit repository files.",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "security_reviewer.toml",
+                "This role may perform harmful external exploitation.",
+                "contradictory harmful-exploitation permission is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "This role may edit product code outside owned paths.",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "This TOML guarantees OS-enforced read-only.",
+                "contradictory OS-enforced read-only sandbox claim is forbidden",
+            ),
         )
         for filename, sentence, diagnostic in cases:
             with self.subTest(role=Path(filename).stem, mutation=sentence):
@@ -517,6 +552,42 @@ class AgentContractTests(unittest.TestCase):
                     sentence,
                 )
                 self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+    def test_negated_or_surrounding_permission_prose_is_not_a_contradiction(self) -> None:
+        cases = (
+            (
+                "architect.toml",
+                "Never state that this role may expose secrets.",
+            ),
+            (
+                "architect.toml",
+                "Do not say this role may run destructive commands.",
+            ),
+            (
+                "architect.toml",
+                "Never authorize this role may contact external systems.",
+            ),
+            (
+                "architect.toml",
+                "Do not say this role may edit repository files.",
+            ),
+            (
+                "implementer.toml",
+                "Never authorize this role may edit product code outside owned paths.",
+            ),
+            (
+                "architect.toml",
+                "Never state that this TOML proves observed runtime behavior.",
+            ),
+        )
+        for filename, sentence in cases:
+            with self.subTest(role=Path(filename).stem, sentence=sentence):
+                candidate = inject_after_heading(
+                    AGENT_SOURCES[filename],
+                    "ALLOWED ACTIONS AND TOOLS",
+                    sentence,
+                )
+                self.assertEqual(self.errors_for(filename, candidate), [], sentence)
 
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
@@ -535,13 +606,14 @@ class AgentContractTests(unittest.TestCase):
 
     def test_every_registered_role_schema_rejects_a_removed_field(self) -> None:
         for name, registered in VALIDATOR.ROLE_CONTRACT_ANCHORS.items():
-            field = registered["schema_fields"][0]
             filename = f"{name}.toml"
-            with self.subTest(role=name, field=field):
-                self.assert_diagnostic(
-                    self.errors_for(filename, remove_schema_field(AGENT_SOURCES[filename], field)),
-                    f"registered structured handoff field missing: {field}",
-                )
+            for field in registered["schema_fields"]:
+                with self.subTest(role=name, field=field):
+                    candidate = remove_schema_field(AGENT_SOURCES[filename], field)
+                    self.assert_diagnostic(
+                        self.errors_for(filename, candidate),
+                        f"registered structured handoff field missing: {field}",
+                    )
 
     def test_reviewer_verdict_enum_cannot_be_widened(self) -> None:
         source = AGENT_SOURCES["reviewer.toml"]
@@ -598,6 +670,73 @@ class AgentContractTests(unittest.TestCase):
                     "REPORT_SCOPE: Observed or returnable child report after a child attempt exists; a pre-spawn native rejection may use a child handoff.",
                 )
                 self.assert_diagnostic(self.errors_for(filename, candidate), "raw pre-spawn rejection")
+
+    def test_every_researcher_status_failure_matrix_anchor_is_required(self) -> None:
+        for name in ("docs_researcher_luna", "docs_researcher_terra"):
+            filename = f"{name}.toml"
+            source = AGENT_SOURCES[filename]
+            for index, anchor in enumerate(VALIDATOR.RESEARCH_STATUS_FAILURE_ANCHORS):
+                with self.subTest(role=name, anchor=index):
+                    candidate = mutate_whitespace_anchor(source, anchor)
+                    self.assert_diagnostic(
+                        self.errors_for(filename, candidate),
+                        "researcher status/failure matrix anchor missing",
+                    )
+
+    def test_researcher_route_and_authority_fields_reject_each_mutation(self) -> None:
+        for name in ("docs_researcher_luna", "docs_researcher_terra"):
+            filename = f"{name}.toml"
+            source = AGENT_SOURCES[filename]
+            requested_route = "Luna/Max" if name.endswith("_luna") else "Terra/high"
+            alternate_route = "Terra/high" if name.endswith("_luna") else "Luna/Max"
+            cases = [
+                (
+                    "requested route",
+                    f"REQUESTED_ROUTE: {requested_route}",
+                    f"REQUESTED_ROUTE: {alternate_route}",
+                    "researcher requested route field is not exact",
+                ),
+                (
+                    "observed route",
+                    "OBSERVED_ROUTE: Observed native route, or unknown when unobserved.",
+                    "OBSERVED_ROUTE: observed route metadata only.",
+                    "researcher requested-versus-observed route distinction missing",
+                ),
+                (
+                    "route authority",
+                    "ROUTE_AUTHORITY: Evidence and classification only; this role does not spawn or authorize",
+                    "ROUTE_AUTHORITY: Evidence and classification only; this role may spawn or authorize",
+                    "researcher route authority must remain evidence-only",
+                ),
+                (
+                    "raw pre-spawn report scope",
+                    "REPORT_SCOPE: Observed or returnable child report after a child attempt exists; a pre-spawn native rejection is parent-owned raw evidence and has no child handoff.",
+                    "REPORT_SCOPE: Observed or returnable child report after a child attempt exists; a pre-spawn native rejection may use a child handoff.",
+                    "researcher raw pre-spawn rejection must remain parent-owned with no child handoff",
+                ),
+            ]
+            if name.endswith("_luna"):
+                cases.append(
+                    (
+                        "Luna parent-only promotion",
+                        "For Luna, only the parent state machine may use the parent-owned evidence/classification to promote the overall chain to FALLBACK_PENDING; this child never spawns or authorizes Terra, fallback, or route switching.",
+                        "For Luna, this child may promote the overall chain to FALLBACK_PENDING; this child never spawns or authorizes Terra, fallback, or route switching.",
+                        "Luna route authority must remain parent-owned",
+                    )
+                )
+            else:
+                cases.append(
+                    (
+                        "Terra terminal authority",
+                        "For Terra, this is terminal STOP_FAILED and never promotes or authorizes fallback or a route switch.",
+                        "For Terra, this is terminal STOP_FAILED and may promote or authorize fallback or a route switch.",
+                        "Terra route authority must remain terminal",
+                    )
+                )
+            for mutation, anchor, replacement, diagnostic in cases:
+                with self.subTest(role=name, mutation=mutation):
+                    candidate = mutate_whitespace_anchor(source, anchor, replacement)
+                    self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
 
     def test_researchers_reject_failure_authorized_fallback_and_route_switch_permissions(self) -> None:
         for name in ("docs_researcher_luna", "docs_researcher_terra"):

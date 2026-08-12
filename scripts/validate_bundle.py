@@ -92,6 +92,17 @@ GLOBAL_CONTRADICTORY_PERMISSION_RULES = (
     ),
     (
         (
+            "may perform harmful external exploitation",
+            "may conduct harmful external exploitation",
+            "may carry out harmful external exploitation",
+            "may run harmful external exploitation",
+            "may perform destructive external exploitation",
+            "may conduct destructive external exploitation",
+        ),
+        "contradictory harmful-exploitation permission is forbidden",
+    ),
+    (
+        (
             "may expose secrets",
             "may disclose secrets",
             "may reveal secrets",
@@ -212,6 +223,15 @@ READ_ONLY_CONTRADICTORY_PERMISSION_ANCHORS = (
     "may modify assigned files",
     "may edit assigned files",
     "may write assigned files",
+    "may edit repository files",
+    "may modify repository files",
+    "may write repository files",
+    "may edit source files",
+    "may modify source files",
+    "may write source files",
+    "may edit files in the repository",
+    "may modify files in the repository",
+    "may write files in the repository",
 )
 READ_ONLY_CONTRADICTORY_SANDBOX_ANCHORS = (
     "this TOML declares OS-enforced read-only",
@@ -220,6 +240,16 @@ READ_ONLY_CONTRADICTORY_SANDBOX_ANCHORS = (
     "the configuration declares OS-enforced read-only",
     "this TOML makes the sandbox OS-enforced read-only",
     "this configuration makes the sandbox OS-enforced read-only",
+    "this TOML guarantees OS-enforced read-only",
+    "the TOML guarantees OS-enforced read-only",
+    "this configuration guarantees OS-enforced read-only",
+    "the configuration guarantees OS-enforced read-only",
+    "this TOML claims OS-enforced read-only",
+    "the TOML claims OS-enforced read-only",
+    "this configuration claims OS-enforced read-only",
+    "the configuration claims OS-enforced read-only",
+    "this TOML asserts OS-enforced read-only",
+    "this configuration asserts OS-enforced read-only",
 )
 WRITER_CONTRADICTORY_PERMISSION_ANCHORS = (
     "may edit unowned product implementation",
@@ -238,6 +268,24 @@ WRITER_CONTRADICTORY_PERMISSION_ANCHORS = (
     "may edit product code outside the named paths",
     "may modify product code outside the named paths",
     "may mutate product code outside the named paths",
+    "may edit product code outside owned paths",
+    "may edit product code outside the owned paths",
+    "may modify product code outside owned paths",
+    "may mutate product code outside owned paths",
+    "may edit product implementation outside owned paths",
+    "may edit product implementation outside the owned paths",
+    "may modify product implementation outside owned paths",
+    "may mutate product implementation outside owned paths",
+    "may edit product code outside assigned paths",
+    "may edit product code outside the assigned paths",
+    "may modify product code outside assigned paths",
+    "may mutate product code outside assigned paths",
+    "may edit product implementation outside assigned paths",
+    "may edit product implementation outside the assigned paths",
+    "may modify product implementation outside assigned paths",
+    "may mutate product implementation outside assigned paths",
+    "may edit product code outside named paths",
+    "may edit product implementation outside named paths",
 )
 RESEARCHER_CONTRADICTORY_FALLBACK_ANCHORS = (
     "content quality, task execution, or tool failure authorizes fallback",
@@ -246,6 +294,8 @@ RESEARCHER_CONTRADICTORY_FALLBACK_ANCHORS = (
     "content, task, or tool failure may authorize fallback",
     "content quality, task execution, or tool failure permits fallback",
     "content, task, or tool failure permits fallback",
+    "content quality, task execution, or tool failure authorizes route switching",
+    "content, task, or tool failure authorizes route switching",
     "failure authorizes route switching",
     "failure may authorize route switching",
     "failure permits route switching",
@@ -667,6 +717,40 @@ def _normalize_registered_text(text: str) -> str:
     return _compact(punctuation_normalized)
 
 
+REGISTERED_DIRECT_CLAUSE_PREFIXES = (
+    (),
+    ("this", "role"),
+    ("the", "role"),
+    ("this", "agent"),
+    ("the", "agent"),
+    ("this", "task"),
+    ("the", "task"),
+)
+
+
+def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
+    """Return normalized sentence/clause tokens for closed-literal matching."""
+    clauses: list[tuple[str, ...]] = []
+    for raw_clause in re.split(r"[\r\n.!?;:]+", text):
+        normalized = _normalize_registered_text(raw_clause)
+        if normalized:
+            clauses.append(tuple(normalized.split()))
+    return tuple(clauses)
+
+
+def _registered_direct_clause_prefixes(text: str) -> frozenset[tuple[str, ...]]:
+    """Build bounded direct-clause prefixes without classifying surrounding prose."""
+    candidates: set[tuple[str, ...]] = set()
+    for clause in _registered_clauses(text):
+        for prefix in REGISTERED_DIRECT_CLAUSE_PREFIXES:
+            if clause[: len(prefix)] != prefix:
+                continue
+            start = len(prefix)
+            for end in range(start + 1, len(clause) + 1):
+                candidates.add(clause[start:end])
+    return frozenset(candidates)
+
+
 def _reject_registered_literals(
     errors: list[str],
     label: str,
@@ -674,9 +758,10 @@ def _reject_registered_literals(
     literals: tuple[str, ...],
     diagnostic: str,
 ) -> None:
-    compact = _normalize_registered_text(text)
+    direct_clause_prefixes = _registered_direct_clause_prefixes(text)
     for literal in literals:
-        if _normalize_registered_text(literal) in compact:
+        normalized_literal = tuple(_normalize_registered_text(literal).split())
+        if normalized_literal in direct_clause_prefixes:
             errors.append(f"{label}: {diagnostic}: {literal}")
 
 
