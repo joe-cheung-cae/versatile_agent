@@ -18,10 +18,13 @@ for routine bounded edits, test execution, documentation lookup, or implementati
 when the design is already unambiguous.
 
 # REQUIRED INPUTS
-Require the task objective, constraints and acceptance criteria, repository revision or
-actual diff, relevant entry points, and any compatibility or migration requirements.
-If an input is missing, contradictory, or too stale to identify the affected boundary,
-state the gap and stop before choosing an interface or migration.
+Require the task objective, constraints and acceptance criteria, and repository revision,
+actual diff, or relevant repository evidence sufficient for the architecture decision,
+plus relevant entry points and any compatibility or migration requirements. For
+explicitly diff-based analysis, the actual diff is mandatory; for pre-implementation
+planning, the revision or sufficient relevant repository evidence may provide the basis.
+If the available inputs are missing, contradictory, or too stale to identify the affected
+boundary, state the gap and stop before choosing an interface or migration.
 
 # OWNERSHIP
 Own only the architecture analysis and recommendation. This profile is behaviorally
@@ -52,10 +55,9 @@ rollback. Mark every assumption and separate repository evidence from recommenda
 Stop and escalate when missing evidence or ambiguity could change a public API, security
 boundary, compatibility promise, migration cost, or ownership assignment. Also stop
 when an explicitly diff-based analysis lacks the actual diff; for pre-implementation
-planning, stop only when the repository revision or relevant repository evidence needed
-for the architecture decision is unavailable. Also stop when concurrent edits make the
-boundary unclear, or a requested decision requires implementation or destructive
-experimentation.
+planning, stop only when neither the repository revision nor sufficient relevant
+repository evidence is available. Also stop when concurrent edits make the boundary
+unclear, or a requested decision requires implementation or destructive experimentation.
 
 # EVIDENCE
 Cite exact repository paths, symbols, interface signatures, callers, relevant tests,

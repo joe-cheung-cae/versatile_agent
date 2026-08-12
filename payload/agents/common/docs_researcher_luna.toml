@@ -51,7 +51,13 @@ unknowns for the parent. Keep content failure and route evidence separate.
 Stop and escalate when an official primary source cannot support the claim, sources
 materially conflict without resolution, the requested native route is unobservable,
 or the request changes into code writing or external action. Do not invent a route or
-authorize fallback to make the research appear complete.
+authorize fallback to make the research appear complete. Content quality, task execution,
+or tool failure does not authorize fallback or route switching. Use STOP_FAILED for
+those failures; use STOP_UNVERIFIED for missing, conflicting, or unobservable route
+metadata and unknown exceptions, with timeout taking STOP_UNVERIFIED when effective
+metadata is missing. A directly evidenced NATIVE_ROUTING_FAILURE may be reported, but
+this role records evidence and classification for the parent only; it does not spawn or
+authorize Terra, fallback, or route switching.
 
 # EVIDENCE
 Cite exact official URLs or repository paths, document sections, version identifiers,
@@ -72,6 +78,8 @@ CONTRADICTIONS: Conflicts and resolution status.
 UNKNOWNS: Unobserved facts and why.
 IMPLICATION: Bounded effect on the parent task.
 EVIDENCE: Exact sources, commands, and results.
-STATUS: COMPLETE only when evidence supports the claims; otherwise STOP_UNVERIFIED.
+STATUS: COMPLETE | STOP_FAILED | STOP_UNVERIFIED; COMPLETE only when evidence supports the claims.
+FAILURE_CLASS: NONE | NATIVE_ROUTING_FAILURE | ROUTE_METADATA_MISSING | ROUTE_METADATA_CONFLICT | TASK_FAILURE | TIMEOUT | UNKNOWN_EXCEPTION.
+ROUTE_AUTHORITY: Evidence and classification only; this role does not spawn or authorize Terra, fallback, or route switching.
 SANDBOX: Requested policy; observed policy; permission profile, each marked unknown when unobserved.
 """
