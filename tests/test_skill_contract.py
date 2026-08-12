@@ -594,6 +594,11 @@ class SkillContractTests(unittest.TestCase):
             "App tasks require explicit current-request authorization; account consent qualifies too.",
             "App tasks require explicit current-request authorization; team permission is sufficient.",
             "App tasks require explicit current-request authorization; prior request authorization is sufficient.",
+            "App tasks require explicit current-request authorization or workspace approval.",
+            "App tasks require explicit current-request authorization or project authorization.",
+            "App tasks require explicit current-request authorization, or organization consent.",
+            "App tasks need explicit authorization in the current user request or another approval.",
+            "App tasks require explicit current-request authorization except workspace approval.",
         )
         for addition in rejected:
             with self.subTest(kind="rejected", addition=addition):
@@ -617,6 +622,9 @@ class SkillContractTests(unittest.TestCase):
             "App tasks require explicit current-request authorization; no other scope qualifies.",
             "App tasks require explicit current-request authorization; neither project nor organization approval qualifies.",
             "App tasks require explicit current-request authorization; workspace approval is not sufficient, but project approval is not acceptable.",
+            "App tasks require explicit current-request authorization, not workspace approval.",
+            "App tasks require explicit current-request authorization; workspace approval is not an alternative.",
+            "Neither workspace nor project approval is accepted.",
         )
         for addition in accepted:
             with self.subTest(kind="accepted", addition=addition):

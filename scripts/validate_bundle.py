@@ -493,6 +493,13 @@ APP_ALTERNATIVE_SCOPE_NOT_LIMITED_RE = re.compile(
     rf"{APP_ALTERNATIVE_SCOPE_RELATION}\b",
     re.IGNORECASE,
 )
+APP_ALTERNATIVE_SCOPE_DIRECT_RE = re.compile(
+    rf"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?]{{0,110}}\b"
+    rf"(?:require|requires|need|needs)\s+(?:an?\s+)?{APP_CURRENT_REQUEST_REQUIREMENT}\b"
+    rf"[^.!?]{{0,60}}\b(?:or|except(?:\s+when)?)\b[^.!?]{{0,30}}\b"
+    rf"{APP_ALTERNATIVE_SCOPE_PHRASE}\b",
+    re.IGNORECASE,
+)
 APP_ALTERNATIVE_SCOPE_UNLESS_RE = re.compile(
     rf"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?]{{0,110}}\b"
     rf"(?:require|requires|need|needs)\s+(?:an?\s+)?{APP_CURRENT_REQUEST_REQUIREMENT}\b"
@@ -541,6 +548,16 @@ def _app_alternative_scope_is_unsafe(fragment: str) -> bool:
             prefix = match.group(0)[max(0, target.start() - 90) : target.start()]
             if APP_ALTERNATIVE_SCOPE_NEGATION_RE.search(prefix) is not None:
                 continue
+            return True
+    for match in APP_ALTERNATIVE_SCOPE_DIRECT_RE.finditer(normalized):
+        candidates = list(
+            APP_ALTERNATIVE_SCOPE_EXCEPTION_TARGET_RE.finditer(match.group(0))
+        )
+        if not candidates:
+            continue
+        target = candidates[-1]
+        prefix = match.group(0)[max(0, target.start() - 90) : target.start()]
+        if APP_ALTERNATIVE_SCOPE_NEGATION_RE.search(prefix) is None:
             return True
     for match in APP_ALTERNATIVE_SCOPE_UNLESS_RE.finditer(normalized):
         candidates = list(
