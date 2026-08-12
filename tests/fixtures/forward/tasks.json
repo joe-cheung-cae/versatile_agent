@@ -1,0 +1,112 @@
+{
+  "cases": {
+    "simple": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "task_kind": "simple",
+      "request": "Update one local unit test and verify the focused command.",
+      "files": ["tests/test_local.py"],
+      "writers": [],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "docs": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "task_kind": "docs",
+      "request": "Answer a bounded vendor API question from official documentation.",
+      "files": ["notes/vendor-api.md"],
+      "writers": [],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "cuda": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "task_kind": "cuda",
+      "request": "Review a CUDA kernel launch and memory synchronization change.",
+      "files": ["src/kernel.cu"],
+      "writers": [],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "numerical": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "task_kind": "numerical",
+      "request": "Review a solver stability and conservation change.",
+      "files": ["src/solver.py"],
+      "writers": [],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "security": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "task_kind": "security",
+      "request": "Trace untrusted input to a privileged filesystem sink.",
+      "files": ["src/auth.py"],
+      "writers": [],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "shared_writers": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "task_kind": "simple",
+      "request": "Make a bounded change with one shared implementation file and one independent test file.",
+      "files": ["src/shared.py", "tests/test_shared.py"],
+      "writers": [
+        {"writer_id": "implementer", "files": ["src/shared.py"]},
+        {"writer_id": "tester", "files": ["tests/test_shared.py"]},
+        {"writer_id": "performance_profiler", "files": ["src/shared.py"]}
+      ],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "app_unauthorized": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "task_kind": "simple",
+      "request": "Create a user-visible App task for this request.",
+      "files": [],
+      "writers": [],
+      "app_task": {
+        "requested": true,
+        "current_request_authorized": false,
+        "configured_route": "gpt-5.6-luna/max"
+      }
+    },
+    "app_authorized": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "task_kind": "simple",
+      "request": "Create a user-visible App task for this request.",
+      "files": [],
+      "writers": [],
+      "app_task": {
+        "requested": true,
+        "current_request_authorized": true,
+        "configured_route": "gpt-5.6-luna/max"
+      }
+    }
+  }
+}

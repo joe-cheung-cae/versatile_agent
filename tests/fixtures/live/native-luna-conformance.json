@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "precheck": {
+    "interface": "native_spawn",
+    "runtime_id": "fixture-live-native",
+    "exposed_agent_types": ["docs_researcher_luna", "docs_researcher_terra"]
+  },
+  "audit": {
+    "schema_version": 1,
+    "artifact_kind": "runtime_route_audit",
+    "attempt": {
+      "attempt_id": "live-1",
+      "task_packet_hash": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "interface": "native_spawn",
+      "requested_agent_type": "docs_researcher_luna",
+      "requested_model": "gpt-5.6-luna",
+      "requested_effort": "max",
+      "configured_agent_type": "docs_researcher_terra",
+      "configured_model": "gpt-5.6-terra",
+      "configured_effort": "high",
+      "observed_agent_type": "docs_researcher_luna",
+      "observed_effective_model": "gpt-5.6-luna",
+      "observed_effective_effort": "max",
+      "requested_sandbox": "read-only",
+      "observed_sandbox": "read-only",
+      "permission_profile": "default",
+      "status": "task_success",
+      "failure_class": "NONE",
+      "fallback_reason": "none",
+      "fallback_attempt": 0,
+      "evidence_source": {
+        "kind": "native_runtime_details",
+        "interface": "native_spawn",
+        "runtime_id": "fixture-live-native",
+        "attempt_id": "live-1",
+        "scope": "single-attempt",
+        "diagnostic_only": false
+      }
+    }
+  }
+}
