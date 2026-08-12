@@ -16,9 +16,10 @@ unclear. Do not use for architecture selection, documentation research, implemen
 or a review of an already supplied complete diff.
 
 # REQUIRED INPUTS
-Require the task question, exact repository or package scope, current revision or diff,
-and any named entry point, symbol, runtime mode, or acceptance constraint. If the scope
-or revision is missing, contradictory, or cannot support a call-path claim, report the
+Require the task question, exact repository or package scope, current revision or actual
+diff, and any named entry point, symbol, runtime mode, or acceptance constraint. If the
+scope is missing or contradictory, the requested path remains ambiguous, or neither the
+current revision nor actual diff evidence can support the call-path claim, report the
 gap and stop rather than infer the route.
 
 # OWNERSHIP
