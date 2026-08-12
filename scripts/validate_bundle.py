@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from bisect import bisect_left
 import html
 import re
 import sys
@@ -92,7 +93,8 @@ CONTRACT_CLAUSE_SPLIT_RE = re.compile(
     r"(?:[.!?;:。！？；：|]+(?=\s|$))"
 )
 SENSITIVE_CONNECTOR_RE = re.compile(
-    r"(?:\b(?:and|yet|or|plus|while|whereas|but|however|although)\b|,(?=\s+))"
+    r"(?:\b(?:and|yet|or|plus|while|whereas|but|however|although|though|"
+    r"nevertheless|nonetheless)\b|,(?=\s+))"
 )
 RAW_HTML_LINK_TAG_RE = re.compile(r"<\s*/?\s*a(?:\s|/?>)", re.IGNORECASE)
 RAW_HTML_HEADING_TAG_RE = re.compile(r"<\s*/?\s*h[1-6](?:\s|/?>)", re.IGNORECASE)
@@ -240,6 +242,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         (
             re.compile(r"\b(?:prior|previous|earlier|past)\s+authori[sz]ation\s+is\s+not\s+(?:acceptable|accepted|sufficient|enough)\b"),
             re.compile(r"\b(?:implicit|implied)\s+consent\s+is\s+not\s+(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\baccept\s+neither\s+(?:the\s+)?(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\s+nor\s+(?:implicit|implied)\s+consent\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\baccept\s+no\s+(?:the\s+)?(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+accept\b[^.!?;:]{0,50}\b(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+accept\b[^.!?;:]{0,50}\b(?:implicit|implied)\s+consent\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b\s+(?:cannot|can't|may\s+not|must\s+not|should\s+not)\s+rely\s+on\s+(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b"),
@@ -403,6 +407,11 @@ APP_LEGAL_ACCEPT_NEGATION_RE = re.compile(
     r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b"
     r"(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+"
     r"accept\b[^.!?;:]{0,50}\b(?:implicit|implied)\s+consent\b"
+    r"|\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\baccept\s+neither\s+"
+    r"(?:the\s+)?(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\s+nor\s+"
+    r"(?:implicit|implied)\s+consent\b"
+    r"|\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\baccept\s+no\s+"
+    r"(?:the\s+)?(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\b"
 )
 
 
@@ -568,14 +577,15 @@ def _contract_sensitive_fragments(
         if not right:
             continue
         fragments.append(right)
+        predicate_start = SENSITIVE_PREDICATE_START_RE.match(right) is not None
         if not recent_subjects or (
             policy.action.search(right) is None
             and not _is_sensitive_ellipsis(right, policy)
+            and not predicate_start
         ):
             continue
-        if (
-            SENSITIVE_PREDICATE_START_RE.match(right) is None
-            and SENSITIVE_SUBJECT_START_RE.match(right) is None
+        if not predicate_start and (
+            SENSITIVE_SUBJECT_START_RE.match(right) is None
             and SENSITIVE_ELLIPSIS_START_RE.match(right) is None
         ):
             continue
@@ -601,7 +611,11 @@ def _contract_sensitive_fragments(
 
 
 def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) -> bool:
-    local_fragments = re.split(r"\b(?:and|nor|but|however|although|while|whereas)\b", fragment)
+    local_fragments = re.split(
+        r"\b(?:and|nor|but|however|although|while|whereas|though|"
+        r"nevertheless|nonetheless)\b",
+        fragment,
+    )
     if any(DOUBLE_NEGATION_RE.search(local) is not None for local in local_fragments):
         return False
     if (
@@ -914,18 +928,25 @@ def _is_indented_code_line(line: str) -> bool:
 
 
 class _RenderedLine(str):
-    """A normalized line carrying one shared paragraph-continuation bit."""
+    """A normalized line carrying shared rendered/code classification bits."""
 
-    def __new__(cls, value: str, *, paragraph_continuation: bool = False):
+    def __new__(
+        cls,
+        value: str,
+        *,
+        paragraph_continuation: bool = False,
+        indented_code: bool = False,
+    ):
         instance = str.__new__(cls, value)
         instance.paragraph_continuation = paragraph_continuation
+        instance.indented_code = indented_code
         return instance
 
 
 def _is_rendered_indented_code_line(line: str) -> bool:
-    return _is_indented_code_line(line) and not getattr(
-        line, "paragraph_continuation", False
-    )
+    if getattr(line, "indented_code", False):
+        return True
+    return _is_indented_code_line(line) and not getattr(line, "paragraph_continuation", False)
 
 
 LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|[0-9]{1,9}[.)])[ \t]{1,4}(.*)$")
@@ -1077,6 +1098,19 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     diagnostics.append("list marker has more than four spaces after its marker")
                     normalized.append("    " + candidate.lstrip())
                     list_stack = list_stack[: candidate_index + 1]
+                    paragraph_active = False
+                    continue
+                candidate_leading = len(candidate) - len(candidate.lstrip(" "))
+                if candidate.startswith("\t") or candidate_leading >= 4:
+                    # Four spaces beyond a list item's content start are an
+                    # indented code block.  Keep the source text and mark it
+                    # once so scanner, semantic masking, raw HTML, and task
+                    # headings all ignore the same rendered line.
+                    list_stack = list_stack[: candidate_index + 1]
+                    normalized.append(
+                        _RenderedLine(candidate, indented_code=True)
+                    )
+                    list_blank_pending = False
                     paragraph_active = False
                     continue
                 content, _, _, content_exhausted = _peel_container_prefixes_details(candidate)
@@ -1571,21 +1605,39 @@ def _contract_rule_matches(
     positive_patterns: tuple[re.Pattern[str], ...],
     negative_patterns: tuple[re.Pattern[str], ...],
 ) -> bool:
-    """Match a contradiction unless a negation overlaps that same match."""
+    """Match a contradiction unless a negation overlaps that same match.
+
+    Negative spans are merged once and queried by interval position.  This
+    keeps a large clause with many legal guards and positive candidates out of
+    the old positive-by-negative nested scan.
+    """
 
     for clause in clauses:
-        negative_spans = [
+        raw_negative_spans = [
             match.span()
             for pattern in negative_patterns
             for match in pattern.finditer(clause)
         ]
+        raw_negative_spans.sort()
+        negative_spans: list[tuple[int, int]] = []
+        for start, end in raw_negative_spans:
+            if negative_spans and start <= negative_spans[-1][1]:
+                negative_spans[-1] = (
+                    negative_spans[-1][0],
+                    max(negative_spans[-1][1], end),
+                )
+            else:
+                negative_spans.append((start, end))
+        negative_starts = [start for start, _ in negative_spans]
         for pattern in positive_patterns:
             for positive_match in pattern.finditer(clause):
                 positive_start, positive_end = positive_match.span()
-                if not any(
-                    negative_start < positive_end and positive_start < negative_end
-                    for negative_start, negative_end in negative_spans
-                ):
+                negative_index = bisect_left(negative_starts, positive_end) - 1
+                overlaps = (
+                    negative_index >= 0
+                    and negative_spans[negative_index][1] > positive_start
+                )
+                if not overlaps:
                     return True
     return False
 
@@ -1633,6 +1685,9 @@ def _unfenced_lines_with_diagnostics(text: str) -> tuple[list[str], bool, list[s
     normalized, container_diagnostics = _container_normalized_lines_with_diagnostics(text)
     for line in normalized:
         if fence_char is None:
+            if _is_rendered_indented_code_line(line):
+                rendered.append("")
+                continue
             marker = _line_fence_marker(line)
             if marker is not None:
                 fence_char, fence_length = marker

@@ -465,6 +465,9 @@ class SkillContractTests(unittest.TestCase):
             "App tasks require explicit current-request authorization, but enable creation without authorization.",
             "No content failure may authorize Terra fallback, yet tool errors qualify as a reason to attempt Terra.",
             "Content failures do not authorize Terra fallback, but enable a Terra attempt.",
+            "Content failures do not authorize Terra fallback, though enable it.",
+            "Content failures do not authorize Terra fallback, nevertheless enable it.",
+            "Content failures do not authorize Terra fallback, nonetheless enable it.",
             "This Skill does not grant permissions, or it confers permission.",
             "This Skill does not change the parent model, but enables permission bypass.",
             "App tasks are not opt-out plus previous approval carries forward.",
@@ -481,6 +484,7 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out. They accept prior request authorization.",
             "App tasks accept prior request authorization.",
             "App tasks may accept implicit consent.",
+            "App tasks accept implicit consent.",
             "Content failures do not authorize Terra fallback, but tool failures do.",
             "Content failures do not authorize Terra fallback. Such outcomes are sufficient reasons for Terra.",
             "Content failures do not authorize Terra fallback. Such outcomes trigger Terra.",
@@ -505,6 +509,9 @@ class SkillContractTests(unittest.TestCase):
             "This Skill does not change the parent model or permissions, guarantee model availability, or perform automatic CLI fallback.",
             "App tasks are not opt-out. They do not inherit authorization from prior requests.",
             "Content failures do not authorize Terra fallback. Tool failures do not authorize Terra fallback.",
+            "Content failures do not authorize Terra fallback, though tool failures do not authorize Terra fallback.",
+            "Content failures do not authorize Terra fallback, nevertheless tool failures do not authorize Terra fallback.",
+            "Content failures do not authorize Terra fallback, nonetheless tool failures do not authorize Terra fallback.",
             "The manifest does not prove the effective route. The probe does not prove the effective route.",
             "App tasks are not opt-out. The weather is clear.",
             "App tasks are not opt-out. They are documented. They inherit authorization from prior requests.",
@@ -513,6 +520,8 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out.\n\nSuch tasks are created by default.",
             "App tasks do not accept prior request authorization.",
             "App tasks should not accept implicit consent.",
+            "App tasks accept neither prior request authorization nor implicit consent.",
+            "App tasks accept no prior request authorization.",
         )
         for addition in accepted:
             with self.subTest(addition=addition):
@@ -592,6 +601,46 @@ class SkillContractTests(unittest.TestCase):
         validator_source = VALIDATOR_PATH.read_text(encoding="utf-8")
         self.assertNotIn("clause[boundary.end() :]", validator_source)
         self.assertNotIn("clause[: boundary.start()]", validator_source)
+
+    def test_explicit_rule_matching_uses_merged_intervals(self) -> None:
+        label, positive_patterns, negative_patterns = next(
+            rule
+            for rule in VALIDATOR.CONTRACT_CONTRADICTION_RULES
+            if rule[0] == "App task may bypass current-request authorization"
+        )
+
+        def mixed_clause(size: int) -> str:
+            return VALIDATOR._normalize_contract_text(" and ".join(
+                "App tasks may be created without explicit authorization and "
+                "App tasks cannot be created without explicit authorization"
+                for _ in range(size)
+            ))
+
+        def legal_clause(size: int) -> str:
+            return VALIDATOR._normalize_contract_text(" and ".join(
+                "App tasks cannot be created without explicit authorization"
+                for _ in range(size)
+            ))
+
+        self.assertFalse(
+            VALIDATOR._contract_rule_matches(
+                [legal_clause(256)], positive_patterns, negative_patterns
+            )
+        )
+        for size in (128, 256):
+            with self.subTest(size=size):
+                self.assertTrue(
+                    VALIDATOR._contract_rule_matches(
+                        [mixed_clause(size)], positive_patterns, negative_patterns
+                    ),
+                    label,
+                )
+        validator_source = VALIDATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("raw_negative_spans.sort()", validator_source)
+        self.assertIn("bisect_left(negative_starts", validator_source)
+        self.assertNotIn(
+            "for negative_start, negative_end in negative_spans", validator_source
+        )
 
     def test_list_dialect_lazy_and_marker_boundaries_fail_closed(self) -> None:
         lazy_link = "- item\nlazy continuation line\n    [Nested](model-routing.md)\n"
@@ -717,6 +766,47 @@ class SkillContractTests(unittest.TestCase):
             ),
             ["model-routing.md"],
         )
+
+        nested_code_cases = (
+            "- item\n\n      App tasks may be created by default.\n",
+            "- item\n\n      [Nested](model-routing.md)\n",
+            "> - item\n>\n>       App tasks may be created by default.\n",
+            "> - item\n>\n>       <h2>Extra</h2>\n",
+        )
+        for nested_code in nested_code_cases:
+            with self.subTest(nested_code=nested_code):
+                normalized, diagnostics = (
+                    VALIDATOR._container_normalized_lines_with_diagnostics(
+                        nested_code
+                    )
+                )
+                self.assertEqual(diagnostics, [])
+                self.assertTrue(
+                    any(
+                        getattr(line, "indented_code", False)
+                        for line in normalized
+                    )
+                )
+                self.assertEqual(
+                    VALIDATOR._scan_rendered_markdown_details(nested_code).targets,
+                    [],
+                )
+                self.assertEqual(
+                    VALIDATOR._raw_html_diagnostics_for_rendered_lines(normalized),
+                    [],
+                )
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + nested_code,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+                self.assertEqual(
+                    VALIDATOR.task_contract_violations(packet + "\n" + nested_code),
+                    [],
+                )
 
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
