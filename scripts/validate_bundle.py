@@ -84,10 +84,10 @@ TASK_CONTRACT_HEADINGS = (
     "## 4. Constraints/requirements",
     "## 5. Verification/handoff",
 )
-ATX_TASK_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$")
+ATX_TASK_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 CONTRACT_CLAUSE_SPLIT_RE = re.compile(
-    r"(?:[.!?;:。！？；：|]+(?=\s|$)|\b(?:but|however|although)\b)"
+    r"(?:[.!?;:。！？；：|]+(?=\s|$)|\b(?:but|however|although|while|whereas)\b)"
 )
 
 
@@ -301,6 +301,15 @@ SENSITIVE_NEGATION_RE = re.compile(
     r"\b(?:no|neither|nor|not|never|cannot|can't|may\s+not|will\s+not|"
     r"does\s+not|doesn't|do\s+not|don't|must\s+not|should\s+not)\b"
 )
+DOUBLE_NEGATION_RE = re.compile(
+    r"\b(?:do\s+not|does\s+not|did\s+not|doesn't|don't|never|not|cannot|can't|"
+    r"may\s+not|will\s+not|must\s+not|should\s+not)\b"
+    r"[^.!?;:]{0,48}\b(?:do\s+not|does\s+not|did\s+not|doesn't|don't|never|not|"
+    r"cannot|can't|may\s+not|will\s+not|must\s+not|should\s+not)\b"
+    r"[^.!?;:]{0,32}\b(?:authorize|authorizes|allow|allows|change|changes|switch|"
+    r"switches|grant|grants|prove|proves|establish|establishes|confirm|confirms|"
+    r"guarantee|guarantees|rely|relies|use|uses|attempt|attempts)\b"
+)
 
 
 class _SensitiveContractPolicy(NamedTuple):
@@ -396,6 +405,9 @@ def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy)
 
 
 def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) -> bool:
+    local_fragments = re.split(r"\b(?:and|nor|but|however|although|while|whereas)\b", fragment)
+    if any(DOUBLE_NEGATION_RE.search(local) is not None for local in local_fragments):
+        return False
     if SENSITIVE_NEGATION_RE.search(fragment) is not None:
         return True
     return any(pattern.search(fragment) is not None for pattern in policy.approved_positive)
@@ -509,13 +521,56 @@ def _is_indented_code_line(line: str) -> bool:
     return line.startswith("\t") or line.startswith("    ")
 
 
-def _is_escaped(text: str, index: int) -> bool:
-    backslashes = 0
-    index -= 1
-    while index >= 0 and text[index] == "\\":
-        backslashes += 1
-        index -= 1
-    return backslashes % 2 == 1
+def _find_unescaped_character(text: str, start: int, character: str) -> int | None:
+    escaped = False
+    index = start
+    while index < len(text):
+        current = text[index]
+        if current == character and not escaped:
+            return index
+        if current == "\\":
+            escaped = not escaped
+        else:
+            escaped = False
+        index += 1
+    return None
+
+
+def _balanced_parentheses(text: str) -> bool:
+    depth = 0
+    escaped = False
+    for current in text:
+        if escaped:
+            escaped = False
+            continue
+        if current == "\\":
+            escaped = True
+            continue
+        if current == "(":
+            depth += 1
+        elif current == ")":
+            depth -= 1
+            if depth < 0:
+                return False
+    return depth == 0
+
+
+def _destination_diagnostic(raw_target: str, kind: str) -> str | None:
+    target = raw_target.strip()
+    if not target:
+        return f"empty {kind} destination"
+    if target.startswith("<"):
+        angle_close = _find_unescaped_character(target, 1, ">")
+        if angle_close is None or angle_close != len(target) - 1:
+            return f"unclosed angle bracket in {kind} destination"
+        if any(character.isspace() for character in target[1:-1]):
+            return f"whitespace-invalid {kind} destination"
+        return None
+    if any(character.isspace() for character in target):
+        return f"whitespace-invalid {kind} destination"
+    if not _balanced_parentheses(target):
+        return f"unbalanced parentheses in {kind} destination"
+    return None
 
 
 def _inline_target_end(line: str, start: int) -> int | None:
@@ -526,19 +581,31 @@ def _inline_target_end(line: str, start: int) -> int | None:
     angle_target = line[start] == "<"
     angle_closed = not angle_target
     depth = 0
+    escaped = False
     index = start
     while index < len(line):
-        if line[index] == "\\":
-            index += 2
+        current = line[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if current == "\\":
+            escaped = True
+            index += 1
             continue
         if angle_target and not angle_closed:
-            if line[index] == ">" and not _is_escaped(line, index):
+            if current == ">":
                 angle_closed = True
             index += 1
             continue
-        if line[index] == "(":
+        if angle_target and angle_closed:
+            if current == ")":
+                return index
+            index += 1
+            continue
+        if current == "(":
             depth += 1
-        elif line[index] == ")":
+        elif current == ")":
             if depth == 0:
                 return index
             depth -= 1
@@ -552,10 +619,8 @@ def _parse_reference_definition(line: str) -> tuple[str, str] | None:
         indent += 1
     if indent >= len(line) or line[indent] != "[":
         return None
-    close = indent + 1
-    while close < len(line) and line[close] != "]":
-        close += 1
-    if close >= len(line) or close + 1 >= len(line) or line[close + 1] != ":":
+    close = _find_unescaped_character(line, indent + 1, "]")
+    if close is None or close + 1 >= len(line) or line[close + 1] != ":":
         return None
     label = _normalize_reference_label(line[indent + 1 : close])
     target_start = close + 2
@@ -564,10 +629,8 @@ def _parse_reference_definition(line: str) -> tuple[str, str] | None:
     if target_start >= len(line):
         return None
     if line[target_start] == "<":
-        target_end = target_start + 1
-        while target_end < len(line) and line[target_end] != ">":
-            target_end += 1
-        if target_end >= len(line):
+        target_end = _find_unescaped_character(line, target_start + 1, ">")
+        if target_end is None:
             return None
         target = line[target_start : target_end + 1]
     else:
@@ -576,6 +639,51 @@ def _parse_reference_definition(line: str) -> tuple[str, str] | None:
             target_end += 1
         target = line[target_start:target_end]
     return (label, target) if label else None
+
+
+def _reference_definition_diagnostic(line: str) -> str | None:
+    indent = 0
+    while indent < len(line) and indent < 3 and line[indent] == " ":
+        indent += 1
+    if indent >= len(line) or line[indent] != "[":
+        return None
+    close = _find_unescaped_character(line, indent + 1, "]")
+    if close is None or close + 1 >= len(line) or line[close + 1] != ":":
+        return None
+    target_start = close + 2
+    while target_start < len(line) and line[target_start] in " \t":
+        target_start += 1
+    if target_start >= len(line):
+        return "empty reference definition destination"
+    if line[target_start] == "<":
+        target_end = _find_unescaped_character(line, target_start + 1, ">")
+        if target_end is None:
+            return "unclosed angle bracket in reference definition destination"
+        remainder = line[target_end + 1 :].strip()
+        if remainder:
+            return "whitespace-invalid reference definition destination"
+        return _destination_diagnostic(line[target_start : target_end + 1], "reference definition")
+    target_end = target_start
+    while target_end < len(line) and not line[target_end].isspace():
+        target_end += 1
+    target = line[target_start:target_end]
+    if target_end < len(line) and line[target_end:].strip():
+        return "whitespace-invalid reference definition destination"
+    return _destination_diagnostic(target, "reference definition")
+
+
+def _escaped_character_flags(text: str) -> list[bool]:
+    """Return odd-backslash escape state for each character in one pass."""
+
+    flags: list[bool] = []
+    backslashes = 0
+    for current in text:
+        flags.append(backslashes % 2 == 1)
+        if current == "\\":
+            backslashes += 1
+        else:
+            backslashes = 0
+    return flags
 
 
 class _MarkdownScan(NamedTuple):
@@ -611,6 +719,10 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
         if _is_indented_code_line(line):
             continue
 
+        definition_diagnostic = _reference_definition_diagnostic(line)
+        if definition_diagnostic is not None:
+            diagnostics.append(definition_diagnostic)
+            continue
         definition = _parse_reference_definition(line)
         if definition is not None:
             label, target = definition
@@ -620,6 +732,7 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                 definitions[label] = target
             continue
 
+        escaped = _escaped_character_flags(line)
         i = 0
         label_start: int | None = None
         candidate_start: int | None = None
@@ -641,7 +754,7 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                 continue
 
             if line[i] == "[" and label_start is None:
-                if _is_escaped(line, i):
+                if escaped[i]:
                     i += 1
                     continue
                 label_start = i + 1
@@ -650,6 +763,9 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                 continue
 
             if line[i] == "[" and label_start is not None:
+                if escaped[i]:
+                    i += 1
+                    continue
                 if not ambiguous_brackets:
                     diagnostics.append("nested bracket label is ambiguous")
                     ambiguous_brackets = True
@@ -657,12 +773,15 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                 continue
 
             if line[i] == "]" and label_start is not None:
+                if escaped[i]:
+                    i += 1
+                    continue
                 label = line[label_start:i]
                 image = (
                     candidate_start is not None
                     and candidate_start > 0
                     and line[candidate_start - 1] == "!"
-                    and not _is_escaped(line, candidate_start - 1)
+                    and not escaped[candidate_start - 1]
                 )
                 next_index = i + 1
                 while next_index < len(line) and line[next_index] in " \t":
@@ -674,20 +793,25 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                         diagnostics.append("unclosed inline link target")
                         i = len(line)
                     else:
+                        raw_target = line[next_index + 1 : target_end].strip()
+                        destination_diagnostic = _destination_diagnostic(raw_target, "inline")
+                        if destination_diagnostic is not None:
+                            diagnostics.append(destination_diagnostic)
                         if not image:
-                            direct_targets.append(line[next_index + 1 : target_end].strip())
+                            if destination_diagnostic is None:
+                                direct_targets.append(raw_target)
                         i = target_end + 1
                     label_start = None
                     continue
                 if next_index < len(line) and line[next_index] == "[":
-                    reference_end = next_index + 1
-                    while reference_end < len(line) and line[reference_end] != "]":
-                        reference_end += 1
-                    if reference_end < len(line):
+                    reference_end = _find_unescaped_character(line, next_index + 1, "]")
+                    if reference_end is not None:
                         if not image:
                             reference_label = line[next_index + 1 : reference_end] or label
                             reference_usages.append((reference_label, True))
                         consumed = reference_end + 1
+                    else:
+                        diagnostics.append("unclosed reference label")
                 elif not image and label:
                     reference_usages.append((label, False))
                 label_start = None
@@ -813,7 +937,9 @@ def task_contract_violations(text: str) -> list[str]:
         if match is None:
             continue
         level = len(match.group(1))
-        heading_text = re.sub(r"[ \t]+#+[ \t]*$", "", match.group(2).strip())
+        heading_text = re.sub(
+            r"[ \t]+#+[ \t]*$", "", (match.group(2) or "").strip()
+        )
         heading = f"{'#' * level} {heading_text}"
         if level == 2:
             headings.append(heading)
@@ -827,10 +953,15 @@ def task_contract_violations(text: str) -> list[str]:
         violations.append(f"task-contract must not contain rendered H3-H6 headings: {non_h2_headings}")
     if unclosed_fence:
         violations.append("task-contract contains an unclosed fenced code block")
-    if any(_invalid_backtick_fence_opener(line) for line in text.splitlines()):
+    if any(_invalid_backtick_fence_opener(line) for line in lines):
         violations.append("task-contract contains an invalid backtick fence opener")
     for index, line in enumerate(lines[:-1]):
-        if line.strip() and SETEXT_UNDERLINE_RE.match(lines[index + 1]):
+        if (
+            line.strip()
+            and not _is_indented_code_line(line)
+            and not _is_indented_code_line(lines[index + 1])
+            and SETEXT_UNDERLINE_RE.match(lines[index + 1])
+        ):
             violations.append("task-contract must not contain rendered Setext headings")
             break
     return violations

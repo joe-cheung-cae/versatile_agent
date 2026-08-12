@@ -379,10 +379,13 @@ class SkillContractTests(unittest.TestCase):
         rejected = (
             "App tasks are opt-out rather than opt-in.",
             "App task creation may use authorization carried over from an earlier request.",
+            "App tasks are not opt-out while App tasks may rely on authorization carried over from an earlier request.",
             "When content fails, fall back to Terra.",
             "A timeout is sufficient reason to attempt Terra.",
             "Offline validation guarantees native runtime behavior.",
             "This Skill grants permissions.",
+            "This Skill does not change the parent model while this Skill grants permissions.",
+            "Content failures do not never authorize Terra fallback.",
             "App tasks may rely on authorization from a prior request.",
             "Content failures and native routing failures may authorize Terra fallback.",
         )
@@ -405,6 +408,10 @@ class SkillContractTests(unittest.TestCase):
             "Offline validation does not guarantee native runtime behavior.",
             "This Skill does not grant permissions.",
             "Neither content failures nor tool failures authorize Terra fallback.",
+            "Content failures do not authorize Terra fallback and tool failures do not authorize Terra fallback.",
+            "App tasks are not opt-out.",
+            "This Skill does not change the parent model.",
+            "Content failures do not authorize Terra fallback.",
         )
         for addition in accepted:
             with self.subTest(addition=addition):
@@ -661,6 +668,54 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+        escaped_label_cases = (
+            r"[label with \] literal](model-routing.md)",
+            r"[label with \[ literal](model-routing.md)",
+        )
+        for escaped_label in escaped_label_cases:
+            with self.subTest(escaped_label=escaped_label):
+                escaped_label_scan = VALIDATOR._scan_rendered_markdown_details(escaped_label)
+                self.assertIn("model-routing.md", escaped_label_scan.targets)
+                self.assertFalse(
+                    any("nested bracket label" in item for item in escaped_label_scan.diagnostics)
+                )
+        escaped_label_map = dict(self.references)
+        escaped_label_map["workflow.md"] += "\n" + "\n".join(escaped_label_cases)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, escaped_label_map, SKILL_PATH),
+                [],
+            )
+
+        malformed_destinations = (
+            "[bad](foo bar)",
+            "[bad](foo(bar)",
+            "[bad](<foo)",
+            "[bad](<foo bar>)",
+            "[bad](<foo> title)",
+        )
+        for malformed in malformed_destinations:
+            with self.subTest(malformed=malformed):
+                malformed_scan = VALIDATOR._scan_rendered_markdown_details(malformed)
+                self.assertTrue(malformed_scan.diagnostics)
+        malformed_definitions = (
+            "[bad-paren]: foo(bar\n",
+            "[bad-angle]: <foo\n",
+            "[bad-space]: foo bar\n",
+            "[bad-angle-space]: <foo bar>\n",
+        )
+        malformed_definition_scan = VALIDATOR._scan_rendered_markdown_details(
+            "".join(malformed_definitions)
+        )
+        self.assertGreaterEqual(len(malformed_definition_scan.diagnostics), 3)
+        malformed_reference_map = dict(self.references)
+        malformed_reference_map["workflow.md"] += "".join(malformed_definitions)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, malformed_reference_map, SKILL_PATH),
+                [],
+            )
+
         image_map = dict(self.references)
         image_map["workflow.md"] += "![image](model-routing.md)\n"
         self.assertEqual(VALIDATOR.extract_local_markdown_targets("![image](model-routing.md)"), [])
@@ -763,6 +818,20 @@ class SkillContractTests(unittest.TestCase):
             VALIDATOR.task_contract_violations(packet + "\n    ### Indented code heading\n"),
             [],
         )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + "\n# H1 remains outside the packet contract\n"),
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + "\n    indented code candidate\n---\n"),
+            [],
+        )
+        for bare_heading in ("##", "###", "####", "#####", "######"):
+            with self.subTest(bare_heading=bare_heading), self.assertRaises(AssertionError):
+                self.assertEqual(
+                    VALIDATOR.task_contract_violations(packet + f"\n{bare_heading}\n"),
+                    [],
+                )
         closed_hash_packet = re.sub(
             r"(?m)^(## (?:1\. Objective|2\. Ownership|3\. Inputs/evidence|4\. Constraints/requirements|5\. Verification/handoff))$",
             r"\1 ##",
