@@ -260,10 +260,40 @@ class SkillContractTests(unittest.TestCase):
             self.assertTrue(VALIDATOR.task_contract_violations(self.task + "\n" + extra), extra)
 
     def test_source_flags_close_and_preserve_fences(self) -> None:
-        closed = VALIDATOR._source_flags("```\n## Contract\n```\n## Contract\n")
+        for spaces in range(4):
+            self.assertEqual(VALIDATOR._fence_start(" " * spaces + "```text"), ("`", 3))
+            self.assertEqual(VALIDATOR._fence_start(" " * spaces + "~~~lang`info"), ("~", 3))
+        self.assertIsNone(VALIDATOR._fence_start("```lang`info"))
+        self.assertIsNone(VALIDATOR._fence_start("    ```text"))
+
+        closed = VALIDATOR._source_flags(" ```text\n## Contract\n   ```\n## Contract\n")
         self.assertEqual(closed, [False, False, False, True])
-        unclosed = VALIDATOR._source_flags("```\n## Contract\n## References\n")
+        tilde_closed = VALIDATOR._source_flags(" ~~~lang`info\n## Contract\n ~~~~\n## Contract\n")
+        self.assertEqual(tilde_closed, [False, False, False, True])
+        unclosed = VALIDATOR._source_flags("   ```text\n## Contract\n## References\n")
         self.assertEqual(unclosed, [False, False, False])
+        self.assertEqual(VALIDATOR._source_dialect_violations("model-routing.md", self.routing), [])
+
+    def test_indented_and_tilde_unclosed_fences_fail_closed_before_contracts(self) -> None:
+        for spaces in (1, 2, 3):
+            opener = " " * spaces + "```text\n"
+            before_contract = self.skill.replace("## Contract\n", opener + "## Contract\n", 1)
+            self.assert_semantic_rejects(before_contract)
+            self.assert_topology_rejects(before_contract)
+
+            before_references = self.skill.replace("## References\n", opener + "## References\n", 1)
+            self.assert_semantic_rejects(before_references)
+            self.assert_topology_rejects(before_references)
+
+        routing = self.routing.replace(
+            "## Canonical routing contract\n",
+            " ~~~lang`info\n## Canonical routing contract\n",
+            1,
+        )
+        references = dict(self.references)
+        references["model-routing.md"] = routing
+        self.assert_semantic_rejects(self.skill, references)
+        self.assert_topology_rejects(self.skill, references)
 
     def test_task_contract_h1_and_h2_wrong_order_are_not_sentinels(self) -> None:
         wrong = self.task.replace("## 2. Ownership\n", "## 3. Inputs/evidence\n", 1)

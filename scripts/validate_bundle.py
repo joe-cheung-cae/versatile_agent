@@ -201,10 +201,18 @@ def _frontmatter(text: str) -> tuple[str | None, list[str]]:
 
 
 def _fence_start(line: str) -> tuple[str, int] | None:
-    match = re.match(r"^(`{3,}|~{3,})([^`]*)$", line)
-    if match is None:
-        return None
-    return match.group(1)[0], len(match.group(1))
+    backtick = re.fullmatch(r"[ ]{0,3}(`{3,})([^`]*)", line)
+    if backtick is not None:
+        return "`", len(backtick.group(1))
+    tilde = re.fullmatch(r"[ ]{0,3}(~{3,})(.*)", line)
+    if tilde is not None:
+        return "~", len(tilde.group(1))
+    return None
+
+
+def _fence_close(line: str, fence: tuple[str, int]) -> bool:
+    marker, length = fence
+    return re.fullmatch(rf"[ ]{{0,3}}{re.escape(marker)}{{{length},}}\s*", line) is not None
 
 
 def _source_flags(text: str, marker_lines: set[str] | None = None) -> list[bool]:
@@ -218,7 +226,7 @@ def _source_flags(text: str, marker_lines: set[str] | None = None) -> list[bool]
         active = fence is None and not comment
         if fence is not None:
             flags.append(False)
-            if re.match(rf"^[ ]{{0,3}}{re.escape(fence[0])}{{{fence[1]},}}\s*$", line):
+            if _fence_close(line, fence):
                 fence = None
             continue
         if line in marker_lines:
@@ -259,6 +267,15 @@ def _source_dialect_violations(filename: str, text: str) -> list[str]:
             continue
         if "<!--" in line or "-->" in line or re.search(r"<[^>\n]+>", line):
             errors.append(f"{filename}:{number} contains unsupported angle or HTML source syntax")
+    fence: tuple[str, int] | None = None
+    for line in text.splitlines():
+        if fence is not None:
+            if _fence_close(line, fence):
+                fence = None
+        else:
+            fence = _fence_start(line)
+    if fence is not None:
+        errors.append(f"{filename} contains an unclosed fenced source block")
     return errors
 
 
