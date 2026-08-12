@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import re
+import sys
 import unittest
 from pathlib import Path
 
@@ -12,6 +14,13 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "payload/skills/versatile-dev/SKILL.md"
 UI_PATH = ROOT / "payload/skills/versatile-dev/agents/openai.yaml"
 REFERENCE_DIR = ROOT / "payload/skills/versatile-dev/references"
+VALIDATOR_PATH = ROOT / "scripts/validate_bundle.py"
+VALIDATOR_SPEC = importlib.util.spec_from_file_location("validate_bundle_for_skill_contract", VALIDATOR_PATH)
+if VALIDATOR_SPEC is None or VALIDATOR_SPEC.loader is None:
+    raise RuntimeError(f"unable to load validator: {VALIDATOR_PATH}")
+VALIDATOR = importlib.util.module_from_spec(VALIDATOR_SPEC)
+sys.modules[VALIDATOR_SPEC.name] = VALIDATOR
+VALIDATOR_SPEC.loader.exec_module(VALIDATOR)
 REQUIRED_REFERENCES = {
     "cuda-cae-review-policy.md",
     "model-routing.md",
@@ -51,16 +60,6 @@ def frontmatter(text: str) -> tuple[list[str], str]:
     return keys, description_match.group(1)
 
 
-def local_markdown_targets(text: str) -> list[str]:
-    targets: list[str] = []
-    for raw_target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", text):
-        target = raw_target.strip().split("#", 1)[0]
-        if not target or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
-            continue
-        targets.append(target)
-    return targets
-
-
 def require_fragments(text: str, fragments: list[str]) -> None:
     lowered = text.casefold()
     missing = [fragment for fragment in fragments if fragment.casefold() not in lowered]
@@ -77,27 +76,6 @@ def require_no_stale_claims(text: str) -> None:
     found = [claim for claim in STALE_CLAIMS if claim.casefold() in lowered]
     if found:
         raise AssertionError(f"stale Skill claims found: {found}")
-
-
-def require_reference_topology(
-    skill_text: str,
-    reference_map: dict[str, str],
-    skill_path: Path,
-) -> None:
-    if set(reference_map) != REQUIRED_REFERENCES:
-        raise AssertionError(f"reference set drifted: {sorted(reference_map)}")
-    targets = set(local_markdown_targets(skill_text))
-    expected = {f"references/{name}" for name in REQUIRED_REFERENCES}
-    if targets != expected:
-        raise AssertionError(f"main Skill links drifted: {sorted(targets)}")
-    for target in targets:
-        resolved = (skill_path.parent / target).resolve()
-        if not resolved.is_file():
-            raise AssertionError(f"unresolved Skill reference: {target}")
-    for name, text in reference_map.items():
-        nested = [target for target in local_markdown_targets(text) if target.endswith(".md")]
-        if nested:
-            raise AssertionError(f"{name} links to another local reference: {nested}")
 
 
 class SkillContractTests(unittest.TestCase):
@@ -161,6 +139,10 @@ class SkillContractTests(unittest.TestCase):
                 "## 5. Verification/handoff",
             ],
         )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(self.references["task-contract.md"]),
+            [],
+        )
 
     def test_current_dual_route_and_fail_closed_semantics(self) -> None:
         require_fragments(
@@ -205,9 +187,16 @@ class SkillContractTests(unittest.TestCase):
                 "automatic CLI fallback",
             ],
         )
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(self.skill, self.references, self.ui),
+            [],
+        )
 
     def test_reference_topology_is_exact_and_first_level(self) -> None:
-        require_reference_topology(self.skill, self.references, SKILL_PATH)
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(self.skill, self.references, SKILL_PATH),
+            [],
+        )
 
     def test_selective_specialist_boundaries(self) -> None:
         require_fragments(
@@ -229,6 +218,26 @@ class SkillContractTests(unittest.TestCase):
     def test_stale_claims_are_absent(self) -> None:
         corpus = "\n".join([self.skill, *self.references.values(), self.ui]).casefold()
         require_no_stale_claims(corpus)
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(self.skill, self.references, self.ui),
+            [],
+        )
+
+    def test_validator_ignores_legitimate_negated_contract_prose(self) -> None:
+        negated = self.skill + "\n".join(
+            (
+                "",
+                "Content failures never authorize Terra.",
+                "The Skill does not change the parent model or permissions.",
+                "A probe cannot establish the native effective route.",
+                "Do not spawn all specialists by default.",
+                "The App task cannot be created without explicit authorization.",
+            )
+        )
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(negated, self.references, self.ui),
+            [],
+        )
 
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
@@ -236,7 +245,10 @@ class SkillContractTests(unittest.TestCase):
             "references/removed-task-contract.md",
         )
         with self.assertRaises(AssertionError):
-            require_reference_topology(missing_packet_link, self.references, SKILL_PATH)
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(missing_packet_link, self.references, SKILL_PATH),
+                [],
+            )
 
         missing_lead_responsibility = self.skill.replace("Own the user's intent", "Ignore the user's intent")
         with self.assertRaises(AssertionError):
@@ -259,14 +271,88 @@ class SkillContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             require_app_lane_contract(weakened_app_lane)
 
-        stale_claim = self.skill + "\nThe dual-agent installer is future work.\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.semantic_contract_violations(weakened_app_lane, self.references, self.ui),
+                [],
+            )
+
+        stale_claim = self.skill + "\nThe dual-agent installer is pending and not implemented.\n"
         with self.assertRaises(AssertionError):
             require_no_stale_claims(stale_claim)
+        stale_skill = self.skill + "\nThe dual-agent installer is pending and not implemented.\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.semantic_contract_violations(stale_skill, self.references, self.ui),
+                [],
+            )
+
+        contradictory_additions = (
+            "App tasks may be created by default.",
+            "App tasks require no explicit authorization.",
+            "No authorization is required for App tasks.",
+            "Prior authorization is enough for App tasks.",
+            "Implicit authorization is allowed for creating App tasks.",
+            "App tasks may be created without explicit authorization.",
+            "Content failures may trigger Terra fallback.",
+            "The dual researchers are pending and not installed.",
+            "The route helper is future work.",
+            "Spawn all specialists by default.",
+            "Delegate every reviewer automatically.",
+            "Use a fixed specialist pipeline.",
+            "Automatic CLI model switching is enabled.",
+            "The CLI automatically switches models.",
+            "Automatic model fallback is enabled.",
+            "A probe proves the effective native route.",
+            "The Skill changes the parent model and permissions.",
+            "The Skill guarantees model availability.",
+            "The installed bundle provides exactly one legacy docs_researcher.",
+            "The current implementation boundary is future work.",
+            "Live conformance is future work.",
+        )
+        for addition in contradictory_additions:
+            with self.subTest(addition=addition), self.assertRaises(AssertionError):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
 
         nested_reference_map = dict(self.references)
-        nested_reference_map["workflow.md"] += "\n[Routing](model-routing.md)\n"
+        nested_reference_map["workflow.md"] += "\n[Routing](./model-routing.md?x=1#y)\n"
         with self.assertRaises(AssertionError):
-            require_reference_topology(self.skill, nested_reference_map, SKILL_PATH)
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, nested_reference_map, SKILL_PATH),
+                [],
+            )
+
+        reference_style_map = dict(self.references)
+        reference_style_map["workflow.md"] += "\n[route]: ./model-routing.md?x=1#y\n[Routing][route]\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, reference_style_map, SKILL_PATH),
+                [],
+            )
+
+        external_reference_map = dict(self.references)
+        external_reference_map["workflow.md"] += "\n[Docs](https://example.com/model-routing.md?x=1#y)\n[Mail](mailto:docs@example.com)\n"
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(self.skill, external_reference_map, SKILL_PATH),
+            [],
+        )
+
+        packet = self.references["task-contract.md"]
+        packet_mutations = (
+            packet + "\n## 6. Extra\n",
+            packet.replace("## 2. Ownership", "## 1. Duplicate\n\n## 2. Ownership"),
+            packet.replace("## 3. Inputs/evidence", "## 4. Constraints/requirements\n\n## 3. Inputs/evidence"),
+        )
+        for mutation in packet_mutations:
+            with self.subTest(packet=mutation), self.assertRaises(AssertionError):
+                self.assertEqual(VALIDATOR.task_contract_violations(mutation), [])
 
 
 if __name__ == "__main__":

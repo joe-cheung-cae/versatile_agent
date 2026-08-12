@@ -7,6 +7,7 @@ import argparse
 import re
 import sys
 import tomllib
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -75,7 +76,233 @@ SKILL_REFERENCE_FILES = {
     "task-contract.md",
     "workflow.md",
 }
-MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+TASK_CONTRACT_HEADINGS = (
+    "## 1. Objective",
+    "## 2. Ownership",
+    "## 3. Inputs/evidence",
+    "## 4. Constraints/requirements",
+    "## 5. Verification/handoff",
+)
+INLINE_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(\s*(?:<([^>]+)>|([^\s)]+))")
+REFERENCE_DEFINITION_RE = re.compile(r"(?m)^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
+NUMBERED_HEADING_RE = re.compile(r"(?m)^#{1,6}[ \t]+\d+\.[ \t]+.+?[ \t]*$")
+CONTRACT_NEGATION_RE = re.compile(
+    r"\b(?:not|never|no|cannot|can't|doesn't|does not|do not|don't|without|must not|should not)\b"
+)
+
+
+def _normalize_contract_text(text: str) -> str:
+    """Normalize prose enough for small, deterministic semantic checks."""
+
+    normalized = text.casefold().replace("’", "'").replace("–", "-").replace("—", "-")
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _positive_contract_match(text: str, pattern: re.Pattern[str]) -> re.Match[str] | None:
+    """Find a positive contradiction while ignoring nearby explicit negation."""
+
+    for match in pattern.finditer(text):
+        context_start = max(0, match.start() - 140)
+        context = text[context_start : match.start()]
+        context = re.split(r"[.!?;]", context)[-1]
+        action_prefix = match.group(0)
+        action_match = re.search(
+            r"\b(?:authorize|authorizes|trigger|triggers|permit|permits|allow|allows|allowed|enable|enables|change|changes|switch|switches|control|controls|override|overrides|prove|proves|establish|establishes|demonstrate|demonstrates|confirm|confirms|guarantee|guarantees|ensure|ensures|provide|provides|create|creates|created|creating)\b",
+            action_prefix,
+        )
+        if action_match:
+            action_prefix = action_prefix[: action_match.start()]
+            negated = CONTRACT_NEGATION_RE.search(context) or CONTRACT_NEGATION_RE.search(action_prefix)
+        else:
+            negated = CONTRACT_NEGATION_RE.search(context)
+        if negated:
+            continue
+        return match
+    return None
+
+
+CONTRACT_CONTRADICTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "App task may bypass current-request authorization",
+        re.compile(
+            r"(?:\bapp(?:\s+user-visible)?\s+tasks?\b.{0,100}\b(?:requires?|needs?|need)\s+no\s+(?:explicit\s+)?authori[sz]ation\b|\bno\s+(?:explicit\s+)?authori[sz]ation\s+(?:is\s+)?required\b.{0,100}\bapp(?:\s+user-visible)?\s+tasks?\b)"
+        ),
+    ),
+    (
+        "App task accepts prior or implicit authorization",
+        re.compile(
+            r"(?:\b(?:prior|previous|earlier|past)\s+authori[sz]ation\b.{0,100}\b(?:is\s+enough|is\s+sufficient|suffices|is\s+accepted)\b.{0,80}\b(?:app(?:\s+user-visible)?\s+tasks?|create|creating)\b|\b(?:prior|previous|earlier|past)\s+authori[sz]ation\b.{0,80}\b(?:app(?:\s+user-visible)?\s+tasks?|create|creating)\b.{0,100}\b(?:is\s+enough|is\s+sufficient|suffices|is\s+accepted)\b)"
+        ),
+    ),
+    (
+        "App task accepts implicit authorization",
+        re.compile(
+            r"\b(?:implicit|implied)\s+authori[sz]ation\b.{0,100}\b(?:app(?:\s+user-visible)?\s+tasks?|create|creating)\b"
+        ),
+    ),
+    (
+        "App task may omit authorization",
+        re.compile(
+            r"(?:\bapp(?:\s+user-visible)?\s+tasks?\b.{0,100}\b(?:without|with\s+no)\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b|\b(?:without|with\s+no)\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b.{0,100}\bapp(?:\s+user-visible)?\s+tasks?\b)"
+        ),
+    ),
+    (
+        "App task may be created by default",
+        re.compile(
+            r"\bapp(?:\s+user-visible)?\s+tasks?\b.{0,100}\b(?:may|can|will)\s+(?:be\s+)?creat(?:e|ed|ing)\b.{0,40}\bby default\b"
+        ),
+    ),
+    (
+        "Non-routing failures may authorize Terra or fallback",
+        re.compile(
+            r"\b(?:content|tool|task|timeout|unknown(?:[-\s]+exception)?)(?:\s*(?:[/,&]|\band\b)\s*(?:content|tool|task|timeout|unknown(?:[-\s]+exception)?))*\s+(?:failure|failures|error|errors|outcome|outcomes|exception|exceptions)?\s*.{0,90}\b(?:authorize|authorizes|trigger|triggers|permit|permits|allow|allows|enable|enables)\b.{0,40}\b(?:terra|fallback)\b"
+        ),
+    ),
+    (
+        "Dual researchers or routing helper described as incomplete",
+        re.compile(
+            r"\b(?:dual[-\s]?(?:researcher|agent)s?|dual[-\s]?agent installer|docs_researcher_luna\s*(?:and|/)\s*docs_researcher_terra|(?:two|both)\s+(?:named\s+)?researchers?|route_research\.py|(?:route|routing)(?:[-\s]+research)?[-\s]+helper)\b.{0,120}\b(?:future|pending|not installed|not implemented|unimplemented|planned|later)\b"
+        ),
+    ),
+    (
+        "Legacy single-only researcher route described as current",
+        re.compile(r"(?:\blegacy\s+single(?:[-\s]+only)?\b|\binstalled\s+bundle\s+provides\s+exactly\s+one\b.{0,60}\b(?:legacy\s+)?docs_researcher\b|\blegacy\s+single\s+configured\b)"),
+    ),
+    (
+        "All or every specialist is selected by default",
+        re.compile(
+            r"\b(?:spawn|run|start|delegate|launch|schedule|use)\b.{0,60}\b(?:all|every)\s+(?:the\s+)?(?:specialists?|reviewers?|agents?)\b.{0,40}\b(?:by default|as default|automatically)\b"
+        ),
+    ),
+    (
+        "Fixed specialist pipeline is required",
+        re.compile(r"\b(?:fixed|predefined|rigid)\s+(?:agent|specialist)\s+(?:pipeline|sequence|roster)\b"),
+    ),
+    (
+        "CLI automatic fallback or model switching is enabled",
+        re.compile(
+            r"(?:\bautomatic\s+cli\s+(?:fallback|model\s+switch(?:ing)?)\b|\bautomatic\s+model\s+fallback\b|\bcli\b.{0,40}\bautomatically\s+(?:switch(?:es|ing)?\s+models?|fallback)\b)"
+        ),
+    ),
+    (
+        "Stale implementation or live-conformance claim",
+        re.compile(
+            r"(?:\bcurrent\s+implementation\s+boundary\b|\blive\s+conformance\b.{0,80}\b(?:future|pending|not implemented|planned)\b)"
+        ),
+    ),
+    (
+        "Probe, manifest, or App task proves effective route",
+        re.compile(
+            r"\b(?:probe|install(?:ation)?\s+manifest|app(?:\s+user-visible)?\s+task(?:\s+result)?s?)\b.{0,90}\b(?:proves?|establishes?|demonstrates?|confirms?)\b.{0,70}\b(?:effective|native)\b"
+        ),
+    ),
+    (
+        "Skill changes parent model or permissions",
+        re.compile(
+            r"\bskill\b.{0,90}\b(?:changes?|switches?|controls?|overrides?)\b.{0,60}\b(?:parent\s+model|permissions?)\b"
+        ),
+    ),
+    (
+        "Skill guarantees model availability",
+        re.compile(r"\b(?:guarantees?|ensures?)\b.{0,50}\b(?:model\s+)?availability\b"),
+    ),
+)
+REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "App task must require explicit current-request authorization",
+        re.compile(
+            r"\bcreate\s+an?\s+app(?:\s+user-visible)?\s+task\b.{0,80}\bonly\s+after\s+explicit\s+authori[sz]ation\s+in\s+the\s+current\s+user\s+request\b"
+        ),
+    ),
+)
+
+
+def _normalize_markdown_target(raw_target: str) -> str | None:
+    target = raw_target.strip()
+    if target.startswith("<") and target.endswith(">"):
+        target = target[1:-1].strip()
+    if not target or target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
+        return None
+    target = re.split(r"[?#]", target, maxsplit=1)[0]
+    while target.startswith("./"):
+        target = target[2:]
+    return target or None
+
+
+def extract_local_markdown_targets(text: str) -> list[str]:
+    """Extract normalized local targets from inline and reference-style links."""
+
+    raw_targets: list[str] = []
+    for match in INLINE_MARKDOWN_LINK_RE.finditer(text):
+        raw_targets.append(match.group(1) or match.group(2))
+    for match in REFERENCE_DEFINITION_RE.finditer(text):
+        raw_targets.append(match.group(1) or match.group(2))
+    targets: list[str] = []
+    for raw_target in raw_targets:
+        target = _normalize_markdown_target(raw_target)
+        if target is not None:
+            targets.append(target)
+    return targets
+
+
+def semantic_contract_violations(
+    skill_text: str,
+    reference_map: Mapping[str, str],
+    ui_text: str = "",
+) -> list[str]:
+    """Return explicit contradiction labels for the frozen Skill contract."""
+
+    reference_text = (reference_map[name] for name in sorted(reference_map))
+    corpus = _normalize_contract_text("\n".join((skill_text, *reference_text, ui_text)))
+    violations: list[str] = []
+    for label, pattern in CONTRACT_CONTRADICTION_PATTERNS:
+        if _positive_contract_match(corpus, pattern) is not None:
+            violations.append(label)
+    skill_corpus = _normalize_contract_text(skill_text)
+    for label, pattern in REQUIRED_CONTRACT_PATTERNS:
+        if pattern.search(skill_corpus) is None:
+            violations.append(label)
+    return violations
+
+
+def task_contract_violations(text: str) -> list[str]:
+    """Require exactly the five numbered task-packet headings in order."""
+
+    headings = [match.group(0).strip() for match in NUMBERED_HEADING_RE.finditer(text)]
+    if headings != list(TASK_CONTRACT_HEADINGS):
+        return [f"task-contract numbered headings must be exactly {list(TASK_CONTRACT_HEADINGS)}: {headings}"]
+    return []
+
+
+def reference_topology_violations(
+    skill_text: str,
+    reference_map: Mapping[str, str],
+    skill_path: Path | None = None,
+) -> list[str]:
+    """Validate direct Skill links and reject reference-to-reference links."""
+
+    violations: list[str] = []
+    actual_references = set(reference_map)
+    if actual_references != SKILL_REFERENCE_FILES:
+        violations.append(
+            f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(actual_references)}"
+        )
+
+    expected_links = {f"references/{name}" for name in SKILL_REFERENCE_FILES}
+    local_links = set(extract_local_markdown_targets(skill_text))
+    if local_links != expected_links:
+        violations.append(f"SKILL.md links must resolve to direct references only: {sorted(local_links)}")
+
+    if skill_path is not None:
+        for target in local_links:
+            if not (skill_path.parent / target).is_file():
+                violations.append(f"SKILL.md has an unresolved local link: {target}")
+
+    for name, text in reference_map.items():
+        nested_links = [target for target in extract_local_markdown_targets(text) if target.casefold().endswith(".md")]
+        if nested_links:
+            violations.append(f"skill reference must not link to another local reference: {name}: {nested_links}")
+    return violations
 
 
 class Validation:
@@ -119,6 +346,7 @@ def validate_skill(root: Path, check: Validation) -> None:
         check.require("TODO" not in text, "SKILL.md still contains TODO text")
 
     ui = root / "payload/skills/versatile-dev/agents/openai.yaml"
+    ui_text = ""
     check.require(ui.is_file(), "missing agents/openai.yaml")
     if ui.is_file():
         ui_text = ui.read_text(encoding="utf-8")
@@ -130,34 +358,16 @@ def validate_skill(root: Path, check: Validation) -> None:
         actual_references == SKILL_REFERENCE_FILES,
         f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(actual_references)}",
     )
-
-    expected_links = {f"references/{name}" for name in SKILL_REFERENCE_FILES}
-    local_links = set()
-    for raw_target in MARKDOWN_LINK_RE.findall(text):
-        target = raw_target.strip().split("#", 1)[0]
-        if not target or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
-            continue
-        local_links.add(target)
-    check.require(
-        local_links == expected_links,
-        f"SKILL.md links must resolve to direct references only: {sorted(local_links)}",
-    )
-    for target in local_links:
-        check.require(
-            (skill.parent / target).is_file(),
-            f"SKILL.md has an unresolved local link: {target}",
-        )
-
-    for reference in reference_dir.glob("*.md"):
-        nested_links = []
-        for raw_target in MARKDOWN_LINK_RE.findall(reference.read_text(encoding="utf-8")):
-            target = raw_target.strip().split("#", 1)[0]
-            if target and target.endswith(".md"):
-                nested_links.append(target)
-        check.require(
-            not nested_links,
-            f"skill reference must not link to another local reference: {reference.name}: {nested_links}",
-        )
+    reference_map = {
+        path.name: path.read_text(encoding="utf-8")
+        for path in reference_dir.glob("*.md")
+    }
+    for violation in semantic_contract_violations(text, reference_map, ui_text):
+        check.errors.append(f"Skill semantic contradiction: {violation}")
+    for violation in task_contract_violations(reference_map.get("task-contract.md", "")):
+        check.errors.append(violation)
+    for violation in reference_topology_violations(text, reference_map, skill):
+        check.errors.append(violation)
 
 
 def validate_agents(root: Path, check: Validation) -> None:
