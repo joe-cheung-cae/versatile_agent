@@ -107,7 +107,7 @@ SENSITIVE_PREDICATE_START_RE = re.compile(
     r"establish|establishes|confirm|confirms|guarantee|guarantees|"
     r"use|uses|attempt|attempts|carry|carries|forward|inherit|inherits|"
     r"confer|confers|qualify|qualifies|reason|reasons|perform|performs|"
-    r"bypass|bypasses|fallback|falls?)\b"
+    r"bypass|bypasses|fallback|falls?|default|defaults|creation|creations)\b"
 )
 SENSITIVE_SUBJECT_START_RE = re.compile(
     r"^(?:they|it|this\s+skill|app(?:\s+user-visible)?\s+tasks?|"
@@ -828,7 +828,7 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
             inline_code_length = None
             comment_active = False
             continue
-        if _is_indented_code_line(line) and pending is None:
+        if _is_rendered_indented_code_line(line) and pending is None:
             # Inline-code/comment state inside an indented code block cannot
             # leak into the following rendered paragraph.
             inline_code_length = None
@@ -896,6 +896,21 @@ def _is_indented_code_line(line: str) -> bool:
     return line.startswith("\t") or line.startswith("    ")
 
 
+class _RenderedLine(str):
+    """A normalized line carrying one shared paragraph-continuation bit."""
+
+    def __new__(cls, value: str, *, paragraph_continuation: bool = False):
+        instance = str.__new__(cls, value)
+        instance.paragraph_continuation = paragraph_continuation
+        return instance
+
+
+def _is_rendered_indented_code_line(line: str) -> bool:
+    return _is_indented_code_line(line) and not getattr(
+        line, "paragraph_continuation", False
+    )
+
+
 LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|[0-9]{1,9}[.)])[ \t]{1,4}(.*)$")
 LIST_ITEM_FULL_RE = re.compile(r"^( *)([-+*]|[0-9]{1,9}[.)])([ \t]{1,4})(.*)$")
 INVALID_LIST_SPACING_RE = re.compile(r"^ *(?:[-+*]|[0-9]{1,9}[.)])[ \t]{5,}")
@@ -955,10 +970,11 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
     # deterministic without assuming a four-space list width.
     list_stack: list[tuple[int, int]] = []
 
-    raw_lines = text.splitlines()
-    lazy_list_active = False
+    list_blank_pending = False
+    lazy_continuation_active = False
     paragraph_active = False
-    for line_index, raw_line in enumerate(raw_lines):
+    root_indented_code_active = False
+    for raw_line in text.splitlines():
         _, _, _, depth_exhausted = _peel_container_prefixes_details(raw_line)
         if depth_exhausted:
             diagnostics.append("container prefix depth exceeded in Markdown line")
@@ -968,7 +984,6 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
             diagnostics.append("list marker has more than four spaces after its marker")
             normalized.append("    " + line.lstrip())
             list_stack = []
-            lazy_list_active = False
             paragraph_active = False
             continue
         if LONG_ORDERED_MARKER_RE.match(line):
@@ -995,22 +1010,25 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
             if content_exhausted:
                 diagnostics.append("container prefix depth exceeded in Markdown line")
             normalized.append(content)
-            lazy_list_active = False
+            lazy_continuation_active = False
             paragraph_active = False
+            root_indented_code_active = False
             continue
 
         if not line.strip():
             normalized.append(line)
-            list_stack = []
-            lazy_list_active = False
-            paragraph_active = False
+            list_blank_pending = bool(list_stack)
+            if not list_stack:
+                paragraph_active = False
             continue
 
         if _is_block_boundary_line(line):
             list_stack = []
-            lazy_list_active = False
+            list_blank_pending = False
+            lazy_continuation_active = False
             normalized.append(line)
             paragraph_active = False
+            root_indented_code_active = False
             continue
 
         leading_spaces = len(line) - len(line.lstrip(" "))
@@ -1032,12 +1050,16 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     list_stack[candidate_index][1] if candidate_index >= 0 else -1
                 )
             if candidate_index >= 0:
+                if lazy_continuation_active:
+                    diagnostics.append(
+                        "ambiguous lazy list continuation before indented content"
+                    )
+                    lazy_continuation_active = False
                 candidate = line[1:] if line.startswith("\t") else line[candidate_indent:]
                 if INVALID_LIST_SPACING_RE.match(candidate):
                     diagnostics.append("list marker has more than four spaces after its marker")
                     normalized.append("    " + candidate.lstrip())
                     list_stack = list_stack[: candidate_index + 1]
-                    lazy_list_active = False
                     paragraph_active = False
                     continue
                 content, _, _, content_exhausted = _peel_container_prefixes_details(candidate)
@@ -1045,36 +1067,55 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     diagnostics.append("container prefix depth exceeded in Markdown line")
                 list_stack = list_stack[: candidate_index + 1]
                 normalized.append(content)
-                lazy_list_active = False
+                list_blank_pending = False
                 paragraph_active = False
                 continue
             if leading_spaces and blockquote_count == 0:
                 diagnostics.append("ambiguous list continuation indentation")
                 list_stack = []
-                lazy_list_active = False
+                list_blank_pending = False
+                lazy_continuation_active = False
             elif blockquote_count == 0:
-                next_line = (
-                    _strip_blockquote_prefixes(raw_lines[line_index + 1])[0]
-                    if line_index + 1 < len(raw_lines)
-                    else ""
-                )
-                next_leading = len(next_line) - len(next_line.lstrip(" "))
-                if next_line.startswith("\t") or next_leading >= list_stack[-1][1]:
-                    diagnostics.append("ambiguous lazy list continuation")
-                    lazy_list_active = True
-                elif not lazy_list_active:
-                    # Keep the list context for this lazy paragraph line.  A
-                    # later indented line is then classified as list content
-                    # instead of silently becoming top-level code.
-                    lazy_list_active = True
+                # CommonMark permits a lazy paragraph continuation without
+                # repeating the list marker.  Preserve the stack so a later
+                # indented link/heading is not silently reclassified as root
+                # code.  If the continuation follows a blank, the boundary
+                # is ambiguous but still remains fail-closed via the shared
+                # diagnostic path when a nested construct is encountered.
+                lazy_continuation_active = True
+                list_blank_pending = False
             else:
                 list_stack = []
-                lazy_list_active = False
+                list_blank_pending = False
+                lazy_continuation_active = False
 
         # A blockquote is a rendered container even when it follows a list;
         # top-level four-space and tab-indented lines remain code.
+        if not list_stack and blockquote_count == 0:
+            leading_spaces = len(line) - len(line.lstrip(" "))
+            if line.startswith("\t") or leading_spaces >= 4:
+                if paragraph_active and not root_indented_code_active:
+                    # An indented line cannot interrupt an open paragraph;
+                    # preserve its rendered content for link/heading checks.
+                    normalized.append(
+                        _RenderedLine(
+                            line.lstrip(" \t"), paragraph_continuation=True
+                        )
+                    )
+                    root_indented_code_active = False
+                else:
+                    # A blank-separated root indentation is a genuine code
+                    # block.  The empty rendered line is shared by scanner,
+                    # task headings, and both semantic validation passes.
+                    normalized.append("")
+                    root_indented_code_active = True
+                paragraph_active = False
+                list_blank_pending = False
+                continue
         normalized.append(line)
         paragraph_active = True
+        root_indented_code_active = False
+        list_blank_pending = False
     return normalized, diagnostics
 
 
@@ -1332,7 +1373,7 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
             fence_marker, fence_length = marker
             continue
 
-        if _is_indented_code_line(line):
+        if _is_rendered_indented_code_line(line):
             if label_active:
                 diagnostics.append("link label crosses an indented code block")
                 label_active = False
@@ -1586,6 +1627,8 @@ def task_contract_violations(text: str) -> list[str]:
     headings: list[str] = []
     non_h2_headings: list[str] = []
     for line in lines:
+        if getattr(line, "paragraph_continuation", False):
+            continue
         match = ATX_TASK_HEADING_RE.match(line)
         if match is None:
             continue
@@ -1615,8 +1658,10 @@ def task_contract_violations(text: str) -> list[str]:
     for index, line in enumerate(lines[:-1]):
         if (
             line.strip()
-            and not _is_indented_code_line(line)
-            and not _is_indented_code_line(lines[index + 1])
+            and not getattr(line, "paragraph_continuation", False)
+            and not getattr(lines[index + 1], "paragraph_continuation", False)
+            and not _is_rendered_indented_code_line(line)
+            and not _is_rendered_indented_code_line(lines[index + 1])
             and SETEXT_UNDERLINE_RE.match(lines[index + 1])
         ):
             violations.append("task-contract must not contain rendered Setext headings")

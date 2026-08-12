@@ -460,6 +460,8 @@ class SkillContractTests(unittest.TestCase):
         rejected = (
             "App tasks are not opt-out, and they inherit authorization from prior requests.",
             "App tasks are not opt-out whereas previous approval carries forward.",
+            "App tasks are not opt-out but default to authorization from previous requests.",
+            "App tasks are not opt-out but creation can use earlier approval.",
             "No content failure may authorize Terra fallback, yet tool errors qualify as a reason to attempt Terra.",
             "This Skill does not grant permissions, or it confers permission.",
             "App tasks are not opt-out plus previous approval carries forward.",
@@ -544,6 +546,24 @@ class SkillContractTests(unittest.TestCase):
             )
         )
 
+        rendered_unsafe = "ordinary paragraph\n    App tasks may be created by default."
+        self.assertTrue(
+            VALIDATOR.semantic_contract_violations(
+                self.skill + "\n" + rendered_unsafe,
+                self.references,
+                self.ui,
+            )
+        )
+        indented_code = "ordinary paragraph\n\n    App tasks may be created by default."
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(
+                self.skill + "\n" + indented_code,
+                self.references,
+                self.ui,
+            ),
+            [],
+        )
+
         policy = next(
             item
             for item in VALIDATOR.SENSITIVE_CONTRACT_POLICIES
@@ -576,6 +596,32 @@ class SkillContractTests(unittest.TestCase):
         with self.assertRaises(AssertionError):
             self.assertEqual(
                 VALIDATOR.reference_topology_violations(self.skill, lazy_map, SKILL_PATH),
+                [],
+            )
+
+        paragraph_link = "ordinary paragraph\n    [Nested](model-routing.md)\n"
+        paragraph_scan = VALIDATOR._scan_rendered_markdown_details(paragraph_link)
+        self.assertIn("model-routing.md", paragraph_scan.targets)
+        paragraph_map = dict(self.references)
+        paragraph_map["workflow.md"] += paragraph_link
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(
+                    self.skill, paragraph_map, SKILL_PATH
+                ),
+                [],
+            )
+
+        list_blank_link = "- item\n\n    [Nested](model-routing.md)\n"
+        list_blank_scan = VALIDATOR._scan_rendered_markdown_details(list_blank_link)
+        self.assertIn("model-routing.md", list_blank_scan.targets)
+        list_blank_map = dict(self.references)
+        list_blank_map["workflow.md"] += list_blank_link
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(
+                    self.skill, list_blank_map, SKILL_PATH
+                ),
                 [],
             )
 
@@ -1171,8 +1217,11 @@ class SkillContractTests(unittest.TestCase):
             VALIDATOR.task_contract_violations(packet + "\n- ordinary packet detail\n"),
             [],
         )
+        root_code_packet = packet + "\n# Code example follows\n\n"
         self.assertEqual(
-            VALIDATOR.task_contract_violations(packet + "\n    ### Indented code heading\n"),
+            VALIDATOR.task_contract_violations(
+                root_code_packet + "    ### Indented code heading\n"
+            ),
             [],
         )
         self.assertEqual(
@@ -1180,7 +1229,9 @@ class SkillContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(
-            VALIDATOR.task_contract_violations(packet + "\n    indented code candidate\n---\n"),
+            VALIDATOR.task_contract_violations(
+                root_code_packet + "    indented code candidate\n---\n"
+            ),
             [],
         )
         for bare_heading in ("##", "###", "####", "#####", "######"):
@@ -1243,7 +1294,9 @@ class SkillContractTests(unittest.TestCase):
             [],
         )
         self.assertEqual(
-            VALIDATOR.task_contract_violations(packet + "\n    <h2>code example</h2>\n"),
+            VALIDATOR.task_contract_violations(
+                root_code_packet + "    <h2>code example</h2>\n"
+            ),
             [],
         )
 
