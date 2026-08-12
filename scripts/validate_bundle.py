@@ -828,13 +828,10 @@ def _require_exact_schema_line(
 
 
 def _operational_text(sections: Mapping[str, str]) -> str:
-    # RETURN SCHEMA is a structured handoff, not an operative permission section.
-    # Every other registered section is included so a contradiction cannot be
-    # hidden outside ALLOWED ACTIONS AND TOOLS.
+    # Include the structured handoff too: closed contradictory permissions must
+    # not be hidden after an otherwise valid exact schema line.
     return "\n".join(
-        sections.get(section_name, "")
-        for section_name in AGENT_CONTRACT_HEADING_NAMES
-        if section_name != "RETURN SCHEMA"
+        sections.get(section_name, "") for section_name in AGENT_CONTRACT_HEADING_NAMES
     )
 
 
@@ -885,7 +882,7 @@ REGISTERED_LIST_MARKER_RE = re.compile(
     r"^\s*(?:[-*+]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)"
     r"(?:\[[ xX]\](?:[ \t]+|$))?"
 )
-REGISTERED_SEPARATOR_RE = re.compile(r"[:：;—–]")
+REGISTERED_SEPARATOR_RE = re.compile(r"[.!?;:：—–]")
 
 
 def _strip_registered_list_marker(line: str) -> str:
@@ -989,6 +986,10 @@ def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
 
         for line_index, line in paragraph:
             if _registered_context_before_line(lines, line_index):
+                # The introducer protects only the immediate clause.  Keep
+                # scanning this physical line/list item after a registered
+                # punctuation boundary for a later direct contradiction.
+                clauses.extend(_registered_separator_remainders(line))
                 continue
             neutral_remainder = _registered_neutral_label_remainder(line)
             clauses.append(neutral_remainder if neutral_remainder is not None else _registered_tokens(line))

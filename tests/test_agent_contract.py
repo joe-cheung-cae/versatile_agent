@@ -152,6 +152,14 @@ def mutate_exact_schema_line(source: str, expected: str, replacement: str | None
     return candidate
 
 
+def append_return_schema_line(source: str, line: str) -> str:
+    marker = '\n"""'
+    index = source.rfind(marker)
+    if index == -1:
+        raise AssertionError("RETURN SCHEMA closing delimiter is absent")
+    return source[:index] + f"\n{line}" + source[index:]
+
+
 class AgentContractTests(unittest.TestCase):
     def materialize(
         self,
@@ -833,6 +841,114 @@ class AgentContractTests(unittest.TestCase):
                 candidate = source.replace(context_anchor, context_anchor + insertion, 1)
                 self.assertNotEqual(candidate, source)
                 self.assertEqual(self.errors_for("architect.toml", candidate), [], insertion)
+
+    def test_cross_line_introducer_only_protects_one_clause_plain_and_list(self) -> None:
+        cases = (
+            (
+                "architect.toml",
+                "This role may expose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "This role may mutate external systems.",
+                "contradictory external-system mutation permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "This role may edit repository files.",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "This role may edit product code outside owned paths.",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "docs_researcher_luna.toml",
+                "Content, task, or tool failure authorizes route switching.",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+            (
+                "docs_researcher_terra.toml",
+                "This role may authorize further fallback.",
+                "contradictory further-fallback permission is forbidden",
+            ),
+        )
+        boundaries = (".", ";", ":", "：", "—", "–")
+        for filename, direct_clause, diagnostic in cases:
+            source = AGENT_SOURCES[filename]
+            for marker in ("", "- "):
+                for boundary in boundaries:
+                    insertion = f"Never state:\n{marker}unrelated{boundary} {direct_clause}\n"
+                    with self.subTest(role=filename, marker=marker or "plain", boundary=boundary):
+                        candidate = inject_after_heading(
+                            source,
+                            "ALLOWED ACTIONS AND TOOLS",
+                            insertion.rstrip("\n"),
+                        )
+                        self.assertNotEqual(candidate, source)
+                        self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+        same_line = (
+            "Never state: unrelated; This role may expose secrets.",
+            "Never state: unrelated — This role may expose secrets.",
+            "Never state: unrelated: This role may expose secrets.",
+            "Never state: unrelated; - This role may expose secrets.",
+        )
+        source = AGENT_SOURCES["architect.toml"]
+        for insertion in same_line:
+            with self.subTest(same_line=insertion):
+                candidate = inject_after_heading(source, "ALLOWED ACTIONS AND TOOLS", insertion)
+                self.assert_diagnostic(
+                    self.errors_for("architect.toml", candidate),
+                    "contradictory secret-disclosure permission is forbidden",
+                )
+
+        benign = (
+            "Never state:\nThis role may expose secrets.",
+            "Never state:\n- This role may expose secrets.",
+            "Never state：\n- This role may expose secrets.",
+            "Do not say;\n- This role may expose secrets.",
+        )
+        for insertion in benign:
+            with self.subTest(benign=insertion):
+                candidate = inject_after_heading(source, "ALLOWED ACTIONS AND TOOLS", insertion)
+                self.assertEqual(self.errors_for("architect.toml", candidate), [], insertion)
+
+    def test_closed_contradictions_are_scanned_inside_return_schema(self) -> None:
+        cases = (
+            (
+                "architect.toml",
+                "This role may expose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "This role may edit repository files.",
+                "contradictory read-only permission is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "This role may edit product code outside owned paths.",
+                "contradictory unowned-product write permission is forbidden",
+            ),
+            (
+                "docs_researcher_luna.toml",
+                "Content, task, or tool failure authorizes route switching.",
+                "contradictory failure-authorized fallback/route-switch permission is forbidden",
+            ),
+            (
+                "docs_researcher_terra.toml",
+                "This role may authorize further fallback.",
+                "contradictory further-fallback permission is forbidden",
+            ),
+        )
+        for filename, line, diagnostic in cases:
+            with self.subTest(role=filename, line=line):
+                candidate = append_return_schema_line(AGENT_SOURCES[filename], line)
+                self.assertNotEqual(candidate, AGENT_SOURCES[filename])
+                self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
 
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
