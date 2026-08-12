@@ -1020,6 +1020,8 @@ class AgentContractTests(unittest.TestCase):
                 "ALLOWED ACTIONS AND TOOLS",
                 "This role may edit product code outside owned paths.",
                 "contradictory unowned-product write permission is forbidden",
+                "This role may edit product code outside owned",
+                "paths.",
             ),
             (
                 "docs_researcher_luna.toml",
@@ -1027,6 +1029,8 @@ class AgentContractTests(unittest.TestCase):
                 "EVIDENCE",
                 "Content, task, or tool failure authorizes route switching.",
                 "contradictory failure-authorized fallback/route-switch permission is forbidden",
+                "Content, task, or tool failure authorizes route",
+                "switching.",
             ),
             (
                 "docs_researcher_terra.toml",
@@ -1034,9 +1038,19 @@ class AgentContractTests(unittest.TestCase):
                 "RETURN SCHEMA",
                 "This role may authorize further fallback.",
                 "contradictory further-fallback permission is forbidden",
+                "This role may authorize further",
+                "fallback.",
             ),
         )
-        for filename, previous_section, next_section, direct_line, diagnostic in cases:
+        for (
+            filename,
+            previous_section,
+            next_section,
+            direct_line,
+            diagnostic,
+            split_prefix,
+            split_suffix,
+        ) in cases:
             source = AGENT_SOURCES[filename]
             for marker in ("", "- [x] "):
                 with self.subTest(role=filename, marker=marker or "plain"):
@@ -1055,14 +1069,11 @@ class AgentContractTests(unittest.TestCase):
                     source,
                     previous_section,
                     next_section,
-                    "This role may expose",
-                    "secrets.",
+                    split_prefix,
+                    split_suffix,
                 )
                 self.assertNotEqual(candidate, source)
-                self.assertFalse(
-                    any(diagnostic in error for error in self.errors_for(filename, candidate)),
-                    candidate,
-                )
+                self.assertEqual(self.errors_for(filename, candidate), [])
 
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
