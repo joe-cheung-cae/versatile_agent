@@ -300,6 +300,42 @@ class RoutingStateTests(unittest.TestCase):
                 self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
                 self.assertEqual(result["fallback_attempt"], 0)
 
+    def test_every_rejection_validates_all_capability_containers(self) -> None:
+        cases = (
+            (
+                "requested_agent_unavailable",
+                lambda record: record["model_support"].append(" padded_model"),
+            ),
+            (
+                "requested_model_unavailable",
+                lambda record: record["exposed_agent_types"].append(" padded_agent"),
+            ),
+            (
+                "requested_effort_unsupported",
+                lambda record: record["exposed_agent_types"].append(" padded_agent"),
+            ),
+            (
+                "model_access_denied",
+                lambda record: record["effort_support"]["gpt-5.6-luna"].append(" padded_effort"),
+            ),
+            (
+                "native_spawn_rejected",
+                lambda record: record["model_support"].append(" padded_model"),
+            ),
+        )
+        for trigger, mutation in cases:
+            with self.subTest(trigger=trigger):
+                document = explicit_rejection_document(trigger)
+                attempt = next(
+                    record
+                    for record in document["runtime_records"]["records"]
+                    if record["runtime_id"] == f"fixture-{trigger}-attempt"
+                )
+                mutation(attempt)
+                result = MODULE.decide(document)
+                self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
+                self.assertEqual(result["fallback_attempt"], 0)
+
     def test_diagnostic_attempt_cannot_prove_success_or_fallback(self) -> None:
         success = read_fixture("luna-success.json")
         next(
@@ -726,6 +762,34 @@ class RoutingStateTests(unittest.TestCase):
             MODULE.runtime_records.query_record = original
         self.assertGreaterEqual(len(calls), 2)
 
+    def test_requested_attempt_classification_ignores_exception_text(self) -> None:
+        document = read_fixture("luna-success.json")
+        original = MODULE.runtime_records.query_record
+        messages = (
+            "interface_kind mismatch",
+            "does not match",
+            "runtime_id missing",
+            "",
+        )
+        for message in messages:
+            calls = 0
+
+            def injected_query(*args: object, **kwargs: object) -> dict:
+                nonlocal calls
+                calls += 1
+                if calls == 1:
+                    return original(*args, **kwargs)
+                raise MODULE.runtime_records.RuntimeRecordError(message)
+
+            MODULE.runtime_records.query_record = injected_query
+            try:
+                result = MODULE.decide(copy.deepcopy(document))
+            finally:
+                MODULE.runtime_records.query_record = original
+            self.assertEqual(result["state"], MODULE.STATE_STOP_UNVERIFIED)
+            self.assertEqual(result["failure_class"], "ROUTE_METADATA_MISSING")
+            self.assertEqual(result["fallback_attempt"], 0)
+
     def test_cli_stdin_and_complementary_runtime_evidence(self) -> None:
         fixture_path = FIXTURE_ROOT / "luna-success.json"
         completed = subprocess.run(
@@ -775,6 +839,38 @@ class RoutingStateTests(unittest.TestCase):
         self.assertEqual(unreadable.returncode, 2)
         self.assertIn("invalid UTF-8", unreadable.stderr)
         self.assertNotIn("Traceback", unreadable.stderr)
+
+        rejection_bytes = (FIXTURE_ROOT / "luna-routing-rejection.json").read_bytes()
+        invalid_stdin = rejection_bytes.replace(
+            b"same native attempt",
+            b"same \xff native attempt",
+            1,
+        )
+        invalid_pipe = subprocess.run(
+            [sys.executable, str(HELPER), "decide", "-"],
+            input=invalid_stdin,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(invalid_pipe.returncode, 2)
+        self.assertEqual(invalid_pipe.stdout, b"")
+        self.assertIn(b"invalid UTF-8", invalid_pipe.stderr)
+        self.assertNotIn(b"Traceback", invalid_pipe.stderr)
+
+        unicode_stdin = rejection_bytes.replace(
+            b"same native attempt rejected the requested model",
+            "同一 native attempt 已拒绝 requested model".encode("utf-8"),
+            1,
+        )
+        unicode_pipe = subprocess.run(
+            [sys.executable, str(HELPER), "decide", "-"],
+            input=unicode_stdin,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(unicode_pipe.returncode, 0, unicode_pipe.stderr)
+        self.assertEqual(json.loads(unicode_pipe.stdout)["state"], MODULE.STATE_FALLBACK_PENDING)
+        self.assertNotIn(b"Traceback", unicode_pipe.stderr)
 
 
 if __name__ == "__main__":

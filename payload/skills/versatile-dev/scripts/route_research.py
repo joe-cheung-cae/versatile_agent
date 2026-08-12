@@ -565,18 +565,11 @@ def _validate_requested_attempt(
 ) -> tuple[str, dict[str, Any] | None, str]:
     """Validate one non-diagnostic native attempt's requested route fields."""
 
-    try:
-        result = runtime_records.query_record(
-            document,
-            runtime_id=runtime_id,
-            interface_kind="native_spawn_attempt",
-        )
-    except Exception as exc:
-        message = str(exc)
-        failure_class = "ROUTE_METADATA_CONFLICT" if "interface_kind" in message else "ROUTE_METADATA_MISSING"
-        return "unverified", None, failure_class
-
-    record = result["record"]
+    record = _select_record(document, runtime_id)
+    if record is None:
+        return "unverified", None, "ROUTE_METADATA_MISSING"
+    if record["interface_kind"] != "native_spawn_attempt":
+        return "unverified", record, "ROUTE_METADATA_CONFLICT"
     if record["diagnostic_only"] is not False:
         return "unverified", record, "ROUTE_METADATA_MISSING"
     observed = record.get("observed")
@@ -613,6 +606,13 @@ def _validate_rejection_attempt(
     if requested_status != "accepted":
         return "unverified", None, record, requested_failure
 
+    if not (
+        _canonical_capability_list(record["exposed_agent_types"])
+        and _canonical_capability_list(record["model_support"])
+        and _canonical_capability_map(record["effort_support"])
+    ):
+        return "unverified", None, record, "ROUTE_METADATA_CONFLICT"
+
     observed = record["observed"]
     exposed = record["exposed_agent_types"]
     models = record["model_support"]
@@ -621,18 +621,12 @@ def _validate_rejection_attempt(
     requested_model = requested_route["model"]
     requested_effort = requested_route["effort"]
     if trigger == "requested_agent_unavailable":
-        if not _canonical_capability_list(exposed):
-            return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_agent in exposed:
             return "conflict", None, record, "ROUTE_METADATA_CONFLICT"
     elif trigger == "requested_model_unavailable":
-        if not _canonical_capability_list(models):
-            return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_model in models:
             return "conflict", None, record, "ROUTE_METADATA_CONFLICT"
     elif trigger == "requested_effort_unsupported":
-        if not _canonical_capability_list(models) or not _canonical_capability_map(efforts):
-            return "unverified", None, record, "ROUTE_METADATA_MISSING"
         if requested_model not in models:
             return "unverified", None, record, "ROUTE_METADATA_MISSING"
         supported_efforts = efforts.get(requested_model)
@@ -1114,7 +1108,8 @@ def canonical_json(value: dict[str, Any]) -> str:
 
 def load_document(path: str | Path) -> dict[str, Any]:
     try:
-        source = sys.stdin.read() if str(path) == "-" else Path(path).read_text(encoding="utf-8")
+        raw = sys.stdin.buffer.read() if str(path) == "-" else Path(path).read_bytes()
+        source = raw.decode("utf-8", errors="strict")
     except UnicodeError as exc:
         raise _error("document", f"invalid UTF-8 input: {exc}") from exc
     try:
