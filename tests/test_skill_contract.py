@@ -451,6 +451,47 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+    def test_connector_locality_and_pronoun_carryover(self) -> None:
+        rejected = (
+            "App tasks are not opt-out, and they inherit authorization from prior requests.",
+            "App tasks are not opt-out whereas previous approval carries forward.",
+            "No content failure may authorize Terra fallback, yet tool errors qualify as a reason to attempt Terra.",
+            "This Skill does not grant permissions, or it confers permission.",
+            "App tasks are not opt-out plus previous approval carries forward.",
+            "No content failure may authorize Terra fallback, tool errors qualify as a reason to attempt Terra.",
+            "No content failure may authorize Terra fallback plus tool errors qualify as a reason to attempt Terra.",
+            "This Skill does not grant permissions, or confers permission.",
+            "This Skill does not grant permissions, plus it confers permission.",
+            "App tasks are not opt-out, and rely on authorization from prior requests.",
+        )
+        for addition in rejected:
+            with self.subTest(addition=addition):
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    )
+                )
+
+        accepted = (
+            "App tasks are not opt-out.",
+            "No content failure may authorize Terra fallback.",
+            "This Skill does not grant permissions.",
+            "Content failures do not authorize Terra fallback and tool failures do not authorize Terra fallback.",
+            "This Skill does not change the parent model or permissions, guarantee model availability, or perform automatic CLI fallback.",
+        )
+        for addition in accepted:
+            with self.subTest(addition=addition):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
             "references/task-contract.md",
@@ -687,6 +728,64 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+        escaped_backtick = r"\` [escaped](model-routing.md) \`"
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(escaped_backtick),
+            ["model-routing.md"],
+        )
+        escaped_backtick_map = dict(self.references)
+        escaped_backtick_map["workflow.md"] += escaped_backtick + "\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, escaped_backtick_map, SKILL_PATH),
+                [],
+            )
+
+        soft_break = "[Outer\n[Inner](model-routing.md)](workflow.md)"
+        soft_break_scan = VALIDATOR._scan_rendered_markdown_details(soft_break)
+        self.assertIn("model-routing.md", soft_break_scan.targets)
+        self.assertTrue(any("nested bracket label" in item for item in soft_break_scan.diagnostics))
+        soft_break_map = dict(self.references)
+        soft_break_map["workflow.md"] += soft_break + "\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, soft_break_map, SKILL_PATH),
+                [],
+            )
+
+        list_container = "- item\n    [nested](model-routing.md)\n"
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(list_container),
+            ["model-routing.md"],
+        )
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets("    [top-level-code](model-routing.md)\n"),
+            [],
+        )
+        list_container_map = dict(self.references)
+        list_container_map["workflow.md"] += list_container
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, list_container_map, SKILL_PATH),
+                [],
+            )
+
+        percent_encoded = "[nested](./model-routing%2Emd?x=1#y)"
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(percent_encoded),
+            ["model-routing.md"],
+        )
+        percent_map = dict(self.references)
+        percent_map["workflow.md"] += percent_encoded + "\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, percent_map, SKILL_PATH),
+                [],
+            )
+
+        titled = VALIDATOR._scan_rendered_markdown_details("[nested](model-routing.md \"title\")")
+        self.assertTrue(any("whitespace-invalid" in item for item in titled.diagnostics))
+
         malformed_destinations = (
             "[bad](foo bar)",
             "[bad](foo(bar)",
@@ -830,6 +929,20 @@ class SkillContractTests(unittest.TestCase):
             with self.subTest(bare_heading=bare_heading), self.assertRaises(AssertionError):
                 self.assertEqual(
                     VALIDATOR.task_contract_violations(packet + f"\n{bare_heading}\n"),
+                    [],
+                )
+        container_heading_mutations = (
+            "> ## Extra\n",
+            "> ### Extra\n",
+            "> Heading\n> ---\n",
+            "- item\n    ## Extra\n",
+            "- item\n    ### Extra\n",
+            "- item\n    Heading\n    ---\n",
+        )
+        for mutation in container_heading_mutations:
+            with self.subTest(container_heading=mutation), self.assertRaises(AssertionError):
+                self.assertEqual(
+                    VALIDATOR.task_contract_violations(packet + "\n" + mutation),
                     [],
                 )
         closed_hash_packet = re.sub(

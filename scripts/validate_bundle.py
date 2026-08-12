@@ -10,6 +10,7 @@ import tomllib
 from collections.abc import Mapping
 from pathlib import Path
 from typing import NamedTuple
+from urllib.parse import unquote
 
 
 REQUIRED_AGENT_KEYS = {"name", "description", "developer_instructions", "model", "model_reasoning_effort", "sandbox_mode"}
@@ -87,8 +88,35 @@ TASK_CONTRACT_HEADINGS = (
 ATX_TASK_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})(?:[ \t]+(.*?)[ \t]*|[ \t]*)$")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
 CONTRACT_CLAUSE_SPLIT_RE = re.compile(
-    r"(?:[.!?;:。！？；：|]+(?=\s|$)|\b(?:but|however|although|while|whereas)\b)"
+    r"(?:[.!?;:。！？；：|]+(?=\s|$))"
 )
+SENSITIVE_CONNECTOR_RE = re.compile(
+    r"(?:\b(?:and|yet|or|plus|while|whereas|but|however|although)\b|,(?=\s+))"
+)
+SENSITIVE_PREDICATE_START_RE = re.compile(
+    r"^(?:is|are|was|were|may|can|could|will|must|should|do|does|did|"
+    r"authorize|authorizes|allow|allows|require|requires|rely|relies|"
+    r"grant|grants|change|changes|switch|switches|prove|proves|"
+    r"establish|establishes|confirm|confirms|guarantee|guarantees|"
+    r"use|uses|attempt|attempts|carry|carries|forward|inherit|inherits|"
+    r"confer|confers|qualify|qualifies|reason|reasons|perform|performs|"
+    r"bypass|bypasses|fallback|falls?)\b"
+)
+SENSITIVE_SUBJECT_START_RE = re.compile(
+    r"^(?:they|it|this\s+skill|app(?:\s+user-visible)?\s+tasks?|"
+    r"previous|prior|earlier|tool|content|task|timeout|unknown|"
+    r"the\s+manifest|the\s+probe|a\s+probe)\b"
+)
+GOVERNING_MODAL_NEGATION_RE = re.compile(
+    r"\b(?:do\s+not|does\s+not|did\s+not|don't|doesn't|cannot|can't|"
+    r"may\s+not|will\s+not|must\s+not|should\s+not)\b"
+)
+NEGATED_ELLIPTICAL_BASE_RE = re.compile(
+    r"^(?:change|grant|switch|prove|establish|confirm|guarantee|perform|"
+    r"bypass|authorize|allow|require|rely|use|attempt|carry|inherit|"
+    r"qualify|reason|fallback)\b"
+)
+NEGATED_CLAIM_RE = re.compile(r"\b(?:do|does|did)\s+not\s+claim\s+that\b")
 
 
 def _normalize_contract_text(text: str) -> str:
@@ -325,7 +353,7 @@ SENSITIVE_CONTRACT_POLICIES: tuple[_SensitiveContractPolicy, ...] = (
         re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b|\bcreate\s+an?\s+app(?:\s+user-visible)?\s+task\b"),
         re.compile(
             r"\b(?:authori[sz]|consent|opt[-\s]?(?:in|out)|prior|previous|earlier|past|"
-            r"carried|implicit|implied|rely|suffic|enough|optional|required|omit|default|"
+            r"carried|carry|forward|inherit|confer|implicit|implied|rely|suffic|enough|optional|required|omit|default|"
             r"create|created|creation)\w*\b"
         ),
         (
@@ -351,7 +379,7 @@ SENSITIVE_CONTRACT_POLICIES: tuple[_SensitiveContractPolicy, ...] = (
             r"(?:failure|failures|fail|fails|failed|error|errors|outcome|outcomes)\b|"
             r"\btimeout\b|\bunknown(?:[-\s]+(?:exception|failure|error|outcome))s?\b"
         ),
-        re.compile(r"\b(?:terra|fallback|attempt|authorize|use|suffic|enough|reason)\w*\b"),
+        re.compile(r"\b(?:terra|fallback|attempt|authorize|use|suffic|enough|reason|qualif)\w*\b"),
     ),
     _SensitiveContractPolicy(
         "Offline-to-runtime/native conformance policy is ambiguous or unsafe",
@@ -367,7 +395,7 @@ SENSITIVE_CONTRACT_POLICIES: tuple[_SensitiveContractPolicy, ...] = (
         re.compile(
             r"\b(?:parent\s+model|permissions?|permission|model\s+availability|availability|"
             r"automatic\s+cli|cli\s+(?:routing|fallback)|model\s+switch(?:ing)?|"
-            r"switch(?:es|ed)?|grant(?:s|ed)?|bypass(?:es|ed)?)\b"
+            r"switch(?:es|ed)?|grant(?:s|ed)?|confer(?:s|red)?|bypass(?:es|ed)?)\b"
         ),
     ),
     _SensitiveContractPolicy(
@@ -382,24 +410,48 @@ SENSITIVE_CONTRACT_POLICIES: tuple[_SensitiveContractPolicy, ...] = (
 
 
 def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy) -> list[str]:
-    """Return a clause plus connector-local fragments with subject carry-over."""
+    """Return connector-local fragments with immediate subject carry-over.
+
+    The Skill contract uses a small controlled vocabulary.  Coordinated
+    pronouns and elliptical predicates are therefore expanded only from a
+    sensitive subject immediately to their left; an earlier legal fragment
+    never immunizes the coordinated fragment that follows it.
+    """
 
     fragments = [clause]
-    predicate = re.compile(
-        r"\b(?:is|are|was|were|may|can|could|will|must|should|do|does|did|"
-        r"authorize|authorizes|allow|allows|require|requires|rely|relies|"
-        r"grant|grants|change|changes|switch|switches|prove|proves|"
-        r"establish|establishes|confirm|confirms|guarantee|guarantees|"
-        r"use|uses|attempt|attempts|fallback|falls?)\b"
-    )
-    boundaries = list(re.finditer(r"\b(?:and|but|however|although)\b", clause))
-    for boundary in boundaries:
+    for boundary in SENSITIVE_CONNECTOR_RE.finditer(clause):
         right = clause[boundary.end() :].strip()
-        if not right or predicate.search(right) is None:
+        right = re.sub(
+            r"^(?:and|yet|or|plus|while|whereas|but|however|although)\b[\s,]*",
+            "",
+            right,
+        )
+        if not right:
             continue
         fragments.append(right)
         left = clause[: boundary.start()]
-        for subject in policy.subject.finditer(left):
+        subjects = list(policy.subject.finditer(left))
+        if not subjects or policy.action.search(right) is None:
+            continue
+        if (
+            SENSITIVE_PREDICATE_START_RE.match(right) is None
+            and SENSITIVE_SUBJECT_START_RE.match(right) is None
+        ):
+            continue
+        connector = boundary.group(0).strip().casefold()
+        if (
+            connector in {"or", ","}
+            and GOVERNING_MODAL_NEGATION_RE.search(left) is not None
+            and SENSITIVE_PREDICATE_START_RE.match(right) is not None
+            and (
+                NEGATED_ELLIPTICAL_BASE_RE.match(right) is not None
+                or NEGATED_CLAIM_RE.search(left) is not None
+            )
+        ):
+            for subject in subjects[-2:]:
+                fragments.append(f"{subject.group(0)} does not {right}")
+            continue
+        for subject in subjects[-2:]:
             fragments.append(f"{subject.group(0)} {right}")
     return fragments
 
@@ -468,6 +520,7 @@ def _normalize_markdown_target(raw_target: str) -> str | None:
     target = raw_target.strip()
     if target.startswith("<") and target.endswith(">"):
         target = target[1:-1].strip()
+    target = unquote(target)
     if not target or target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
         return None
     target = re.split(r"[?#]", target, maxsplit=1)[0]
@@ -521,6 +574,52 @@ def _is_indented_code_line(line: str) -> bool:
     return line.startswith("\t") or line.startswith("    ")
 
 
+LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|\d+[.)])[ \t]+(.*)$")
+
+
+def _strip_blockquote_prefix(line: str) -> str:
+    """Strip rendered blockquote containers while preserving inner indentation."""
+
+    while True:
+        match = re.match(r"^ {0,3}>[ \t]?", line)
+        if match is None:
+            return line
+        line = line[match.end() :]
+
+
+def _container_normalized_lines(text: str) -> list[str]:
+    """Normalize a conservative blockquote/list container subset.
+
+    Four-space and tab indentation remains code at the document root.  Once a
+    list item is seen, one bounded continuation indentation level is rendered
+    as that item's content so the link scanner and task-heading validator use
+    the same container interpretation.
+    """
+
+    normalized: list[str] = []
+    list_indent: int | None = None
+    for raw_line in text.splitlines():
+        line = _strip_blockquote_prefix(raw_line)
+        list_match = LIST_ITEM_RE.match(line)
+        if list_match is not None:
+            list_indent = len(list_match.group(1))
+            normalized.append(list_match.group(2))
+            continue
+
+        if list_indent is not None and line.strip():
+            if line.startswith("\t"):
+                normalized.append(line[1:])
+                continue
+            leading_spaces = len(line) - len(line.lstrip(" "))
+            continuation_indent = list_indent + 4
+            if leading_spaces >= continuation_indent:
+                normalized.append(line[continuation_indent:])
+                continue
+            list_indent = None
+        normalized.append(line)
+    return normalized
+
+
 def _find_unescaped_character(text: str, start: int, character: str) -> int | None:
     escaped = False
     index = start
@@ -559,6 +658,8 @@ def _destination_diagnostic(raw_target: str, kind: str) -> str | None:
     target = raw_target.strip()
     if not target:
         return f"empty {kind} destination"
+    if re.search(r"%(?![0-9a-fA-F]{2})", target):
+        return f"invalid percent escape in {kind} destination"
     if target.startswith("<"):
         angle_close = _find_unescaped_character(target, 1, ">")
         if angle_close is None or angle_close != len(target) - 1:
@@ -701,9 +802,17 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
     diagnostics: list[str] = []
     fence_marker: str | None = None
     fence_length = 0
+    label_active = False
+    label_buffer: list[str] = []
+    label_is_image = False
+    nested_label_reported = False
 
-    for line in text.splitlines():
+    for line in _container_normalized_lines(text):
         if fence_marker is not None:
+            if label_active:
+                diagnostics.append("link label crosses a fenced code block")
+                label_active = False
+                label_buffer = []
             if _fence_closes(line, fence_marker, fence_length):
                 fence_marker = None
                 fence_length = 0
@@ -717,72 +826,92 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
             continue
 
         if _is_indented_code_line(line):
+            if label_active:
+                diagnostics.append("link label crosses an indented code block")
+                label_active = False
+                label_buffer = []
             continue
 
-        definition_diagnostic = _reference_definition_diagnostic(line)
-        if definition_diagnostic is not None:
-            diagnostics.append(definition_diagnostic)
-            continue
-        definition = _parse_reference_definition(line)
-        if definition is not None:
-            label, target = definition
-            if label in definitions:
-                diagnostics.append(f"duplicate reference definition: {label}")
-            else:
-                definitions[label] = target
+        if not label_active:
+            definition_diagnostic = _reference_definition_diagnostic(line)
+            if definition_diagnostic is not None:
+                diagnostics.append(definition_diagnostic)
+                continue
+            definition = _parse_reference_definition(line)
+            if definition is not None:
+                label, target = definition
+                if label in definitions:
+                    diagnostics.append(f"duplicate reference definition: {label}")
+                else:
+                    definitions[label] = target
+                continue
+
+        if not line:
+            if label_active:
+                diagnostics.append("link label crosses a blank line")
+                label_active = False
+                label_buffer = []
             continue
 
         escaped = _escaped_character_flags(line)
         i = 0
-        label_start: int | None = None
-        candidate_start: int | None = None
-        ambiguous_brackets = False
         while i < len(line):
-            if line[i] == "`":
+            if line[i] == "`" and not escaped[i]:
                 run_end = i + 1
                 while run_end < len(line) and line[run_end] == "`":
                     run_end += 1
                 run_length = run_end - i
-                close = line.find("`" * run_length, run_end)
-                if close < 0:
+                close = run_end
+                backtick_run = "`" * run_length
+                while close < len(line):
+                    if line.startswith(backtick_run, close) and not escaped[close]:
+                        break
+                    close += 1
+                if close >= len(line):
                     diagnostics.append("unclosed or unequal inline backtick run")
+                    if label_active:
+                        label_active = False
+                        label_buffer = []
                     i = len(line)
                 else:
+                    if label_active:
+                        diagnostics.append("inline code in link label is ambiguous")
+                        label_active = False
+                        label_buffer = []
                     i = close + run_length
-                label_start = None
-                candidate_start = None
                 continue
 
-            if line[i] == "[" and label_start is None:
+            if line[i] == "[" and not label_active:
                 if escaped[i]:
                     i += 1
                     continue
-                label_start = i + 1
-                candidate_start = i
-                i += 1
-                continue
-
-            if line[i] == "[" and label_start is not None:
-                if escaped[i]:
-                    i += 1
-                    continue
-                if not ambiguous_brackets:
-                    diagnostics.append("nested bracket label is ambiguous")
-                    ambiguous_brackets = True
-                i += 1
-                continue
-
-            if line[i] == "]" and label_start is not None:
-                if escaped[i]:
-                    i += 1
-                    continue
-                label = line[label_start:i]
-                image = (
-                    candidate_start is not None
-                    and candidate_start > 0
-                    and line[candidate_start - 1] == "!"
-                    and not escaped[candidate_start - 1]
+                label_active = True
+                label_buffer = []
+                nested_label_reported = False
+                label_is_image = (
+                    i > 0 and line[i - 1] == "!" and not escaped[i - 1]
                 )
+                i += 1
+                continue
+
+            if line[i] == "[" and label_active:
+                if escaped[i]:
+                    label_buffer.append(line[i])
+                    i += 1
+                    continue
+                if not nested_label_reported:
+                    diagnostics.append("nested bracket label is ambiguous")
+                    nested_label_reported = True
+                label_buffer.append(line[i])
+                i += 1
+                continue
+
+            if line[i] == "]" and label_active:
+                if escaped[i]:
+                    label_buffer.append(line[i])
+                    i += 1
+                    continue
+                label = "".join(label_buffer)
                 next_index = i + 1
                 while next_index < len(line) and line[next_index] in " \t":
                     next_index += 1
@@ -797,31 +926,40 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                         destination_diagnostic = _destination_diagnostic(raw_target, "inline")
                         if destination_diagnostic is not None:
                             diagnostics.append(destination_diagnostic)
-                        if not image:
+                        if not label_is_image:
                             if destination_diagnostic is None:
                                 direct_targets.append(raw_target)
                         i = target_end + 1
-                    label_start = None
+                    label_active = False
+                    label_buffer = []
                     continue
                 if next_index < len(line) and line[next_index] == "[":
                     reference_end = _find_unescaped_character(line, next_index + 1, "]")
                     if reference_end is not None:
-                        if not image:
+                        if not label_is_image:
                             reference_label = line[next_index + 1 : reference_end] or label
                             reference_usages.append((reference_label, True))
                         consumed = reference_end + 1
                     else:
                         diagnostics.append("unclosed reference label")
-                elif not image and label:
+                elif not label_is_image and label:
                     reference_usages.append((label, False))
-                label_start = None
+                label_active = False
+                label_buffer = []
                 i = consumed
                 continue
 
+            if label_active:
+                label_buffer.append(line[i])
             i += 1
+
+        if label_active:
+            label_buffer.append("\n")
 
     if fence_marker is not None:
         diagnostics.append("unclosed fenced code block")
+    if label_active:
+        diagnostics.append("unclosed link label")
 
     raw_targets = list(direct_targets)
     unresolved: list[str] = []
@@ -911,7 +1049,7 @@ def _unfenced_lines(text: str) -> tuple[list[str], bool]:
     rendered: list[str] = []
     fence_char: str | None = None
     fence_length = 0
-    for line in text.splitlines():
+    for line in _container_normalized_lines(text):
         if fence_char is None:
             marker = _line_fence_marker(line)
             if marker is not None:
