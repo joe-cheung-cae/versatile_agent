@@ -51,8 +51,11 @@ rollback. Mark every assumption and separate repository evidence from recommenda
 # STOP / ESCALATE
 Stop and escalate when missing evidence or ambiguity could change a public API, security
 boundary, compatibility promise, migration cost, or ownership assignment. Also stop
-when the actual diff is unavailable, concurrent edits make the boundary unclear, or a
-requested decision requires implementation or destructive experimentation.
+when an explicitly diff-based analysis lacks the actual diff; for pre-implementation
+planning, stop only when the repository revision or relevant repository evidence needed
+for the architecture decision is unavailable. Also stop when concurrent edits make the
+boundary unclear, or a requested decision requires implementation or destructive
+experimentation.
 
 # EVIDENCE
 Cite exact repository paths, symbols, interface signatures, callers, relevant tests,
