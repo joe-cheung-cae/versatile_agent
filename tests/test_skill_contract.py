@@ -49,6 +49,21 @@ class SkillContractTests(unittest.TestCase):
         errors = VALIDATOR.reference_topology_violations(skill, references or self.references, SKILL_PATH)
         self.assertTrue(errors, "the topology mutation was accepted")
 
+    def assert_semantic_diagnostic(
+        self,
+        candidate: str,
+        diagnostic: str,
+        references: dict[str, str] | None = None,
+    ) -> None:
+        self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+        errors = VALIDATOR.semantic_contract_violations(
+            candidate, references or self.references, self.ui
+        )
+        self.assertTrue(
+            any(diagnostic in error for error in errors),
+            f"missing diagnostic {diagnostic!r}: {errors}",
+        )
+
     def validate_materialized(self, mutations: dict[str, bytes] | None = None) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -329,6 +344,194 @@ class SkillContractTests(unittest.TestCase):
             removed = removed.replace(source, "")
         definitions = "\n".join(f"[unused-{i}]: {target}" for i, target in enumerate(VALIDATOR.DIRECT_LINK_LINES))
         self.assert_topology_rejects(removed + "\n" + definitions)
+
+    def test_direct_reference_topology_requires_active_inline_usages(self) -> None:
+        definitions = "\n".join(
+            f"[definition-{i}]: {target}"
+            for i, target in enumerate(VALIDATOR.DIRECT_LINK_LINES)
+        )
+        removed = self.skill
+        for source in VALIDATOR.DIRECT_LINK_LINES.values():
+            removed = removed.replace(source, "", 1)
+        cases = (
+            ("definition-only", removed + "\n" + definitions),
+            (
+                "unused-definition-with-all-inline-links",
+                self.skill + "\n[unused]: references/model-routing.md\n",
+            ),
+            (
+                "masked-definition-only",
+                removed + "\n```text\n[masked]: references/model-routing.md\n```\n",
+            ),
+            (
+                "masked-inline-only",
+                removed
+                + "\n```text\n[model routing](references/model-routing.md)\n```\n",
+            ),
+        )
+        for name, candidate in cases:
+            with self.subTest(mutation=name):
+                self.assertNotEqual(candidate, self.skill)
+                errors = VALIDATOR.reference_topology_violations(
+                    candidate, self.references, SKILL_PATH
+                )
+                if "definition" in name:
+                    self.assertTrue(
+                        any("definition cannot satisfy" in error for error in errors),
+                        errors,
+                    )
+                else:
+                    self.assertTrue(
+                        any("exactly one active direct link" in error for error in errors),
+                        errors,
+                    )
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(
+                self.skill, self.references, SKILL_PATH
+            ),
+            [],
+        )
+
+    def test_registered_app_and_failure_polarity_is_closed_and_line_local(self) -> None:
+        rejecting = (
+            (
+                "app could",
+                "App tasks could be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app can",
+                "App tasks can be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app may with whitespace",
+                "APP   TASKS   MAY   BE   CREATED, WITHOUT EXPLICIT AUTHORIZATION!",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app allowed",
+                "App tasks are allowed to be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app creation allowed",
+                "App task creation is allowed without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app authorizes",
+                "App task creation authorizes without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "failure could",
+                "Content failures could authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "failure allowed",
+                "Content failures are allowed to authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "failure may route switch",
+                "Content, task, or tool failure may authorize route switching.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "failure authorizes",
+                "Content failures authorizes Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "legal-then-app",
+                "Do not create an App task without explicit authorization, and App tasks could be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "legal-then-failure",
+                "Content failures do not authorize Terra fallback, and Content failures could authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+        )
+        for name, sentence, diagnostic in rejecting:
+            with self.subTest(mutation=name):
+                self.assert_semantic_diagnostic(
+                    self.skill + "\n" + sentence + "\n", diagnostic
+                )
+
+        accepted = (
+            "Do not create an App task without explicit authorization.",
+            "App tasks cannot be created without explicit authorization.",
+            "App tasks are not allowed to be created without explicit authorization.",
+            "Content failures do not authorize Terra fallback.",
+            "Content failures could not authorize Terra fallback.",
+            "Do not say: App tasks could be created without explicit authorization.",
+            "App tasks could be\ncreated without explicit authorization.",
+            "App tasks could be\n\ncreated without explicit authorization.",
+            "```text\nApp tasks could be created without explicit authorization.\n```",
+        )
+        for sentence in accepted:
+            with self.subTest(control=sentence):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill)
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        candidate, self.references, self.ui
+                    ),
+                    [],
+                )
+
+    def test_fenced_h2_h3_lines_fail_closed_without_breaking_code_fences(self) -> None:
+        mutations = (
+            ("skill-canonical-backtick", "SKILL.md", "```text\n## Contract\n```"),
+            ("skill-peer-tilde", "SKILL.md", "  ~~~~\n   ### Peer\n  ~~~~"),
+            (
+                "routing-canonical-long-backtick",
+                "model-routing.md",
+                "````text\n  ## Canonical routing contract\n````",
+            ),
+            (
+                "workflow-peer-invalid-close",
+                "workflow.md",
+                "~~~\n### Peer\n~~~suffix\n",
+            ),
+            (
+                "reference-peer",
+                "review-policy.md",
+                "```\n## Unrelated peer\n```",
+            ),
+        )
+        for name, filename, fence in mutations:
+            with self.subTest(mutation=name):
+                if filename == "SKILL.md":
+                    candidate = self.skill + "\n" + fence + "\n"
+                    errors = VALIDATOR.semantic_contract_violations(
+                        candidate, self.references, self.ui
+                    )
+                else:
+                    references = dict(self.references)
+                    references[filename] += "\n" + fence + "\n"
+                    candidate = self.skill
+                    errors = VALIDATOR.semantic_contract_violations(
+                        candidate, references, self.ui
+                    )
+                if filename == "SKILL.md":
+                    self.assertNotEqual(candidate, self.skill)
+                else:
+                    self.assertNotEqual(references[filename], self.references[filename])
+                self.assertTrue(
+                    any("unsupported H2/H3 heading inside a fenced source block" in error for error in errors),
+                    errors,
+                )
+
+        ordinary = dict(self.references)
+        ordinary["workflow.md"] += "\n```text\nordinary code\n```\n"
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(self.skill, ordinary, self.ui),
+            [],
+        )
 
     def test_unsupported_skill_link_forms_fail_closed(self) -> None:
         cases = (

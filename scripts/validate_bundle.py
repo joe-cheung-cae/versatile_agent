@@ -882,6 +882,109 @@ REGISTERED_LIST_MARKER_RE = re.compile(
 )
 REGISTERED_SEPARATOR_RE = re.compile(r"[.!?;:：—–]")
 
+# These two predicates are the only cross-document polarity rules in this
+# validator.  They are deliberately registered token sequences rather than a
+# general intent classifier: a source sentence must start with one of these
+# subjects, use one of the listed affirmative modal forms, and contain the
+# registered unsafe tail.  Negative controls remain legal.
+REGISTERED_MODAL_FAMILIES = (
+    ("may",),
+    ("can",),
+    ("could",),
+    ("is", "allowed"),
+    ("is", "allowed", "to"),
+    ("are", "allowed"),
+    ("are", "allowed", "to"),
+    ("be", "allowed", "to"),
+)
+REGISTERED_APP_TASK_SUBJECTS = (
+    ("app", "task"),
+    ("app", "tasks"),
+    ("an", "app", "task"),
+    ("the", "app", "task"),
+    ("app", "user", "visible", "task"),
+    ("app", "user", "visible", "tasks"),
+    ("app", "task", "creation"),
+)
+REGISTERED_APP_TASK_ACTIONS = (
+    (),
+    ("created",),
+    ("be", "created"),
+    ("create",),
+    ("be", "made"),
+    ("made",),
+)
+REGISTERED_UNAUTHORIZED_TAILS = (
+    ("without", "authorization"),
+    ("without", "explicit", "authorization"),
+    ("without", "explicit", "current", "request", "authorization"),
+    ("without", "current", "request", "authorization"),
+    ("without", "current", "request", "explicit", "authorization"),
+    ("without", "current", "user", "request", "authorization"),
+    ("without", "explicit", "authorization", "in", "the", "current", "user", "request"),
+    ("without", "explicit", "authorization", "in", "the", "current", "request"),
+    ("without", "explicit", "authorization", "in", "current", "request"),
+)
+REGISTERED_APP_TASK_DIRECT_ACTIONS = (("authorize",), ("authorizes",))
+REGISTERED_FAILURE_SUBJECTS = (
+    ("content", "failure"),
+    ("content", "failures"),
+    ("content", "task", "failure"),
+    ("content", "task", "failures"),
+    ("content", "tool", "task", "failure"),
+    ("content", "tool", "task", "failures"),
+    ("content", "task", "tool", "failure"),
+    ("content", "task", "tool", "failures"),
+    ("content", "task", "or", "tool", "failure"),
+    ("content", "task", "or", "tool", "failures"),
+    ("content", "tool", "or", "task", "failure"),
+    ("content", "tool", "or", "task", "failures"),
+    ("content", "quality", "task", "execution", "or", "tool", "failure"),
+    ("content", "quality", "task", "execution", "or", "tool", "failures"),
+    ("content", "tool", "task", "timeout", "and", "unknown", "failures"),
+)
+REGISTERED_FAILURE_ACTIONS = (("authorize",), ("authorizes",))
+REGISTERED_FAILURE_AUTHORITY_TAILS = (
+    ("fallback",),
+    ("terra", "fallback"),
+    ("a", "terra", "fallback"),
+    ("native", "terra", "fallback"),
+    ("fallback", "to", "terra"),
+    ("a", "route", "switch"),
+    ("terra", "route", "switch"),
+    ("terra", "route", "switching"),
+    ("route", "switch"),
+    ("route", "switching"),
+)
+REGISTERED_NEGATION_TOKENS = frozenset({"not", "never", "cannot", "no", "neither"})
+REGISTERED_NEGATED_CONTRACTION_PAIRS = frozenset(
+    {
+        ("can", "t"),
+        ("doesn", "t"),
+        ("don", "t"),
+        ("isn", "t"),
+        ("aren", "t"),
+        ("wasn", "t"),
+        ("weren", "t"),
+    }
+)
+REGISTERED_QUOTING_INTRODUCERS = frozenset(
+    {
+        ("never", "state"),
+        ("do", "not", "say"),
+        ("never", "authorize"),
+        ("do", "not", "authorize"),
+        ("never", "claim"),
+        ("do", "not", "claim"),
+        ("must", "not", "say"),
+        ("must", "not", "authorize"),
+    }
+)
+REGISTERED_POLARITY_DIAGNOSTICS = {
+    "app": "contradictory App task creation without explicit authorization is forbidden",
+    "failure": "contradictory content/task/tool failure authorization of Terra fallback or route switching is forbidden",
+}
+
 
 def _strip_registered_list_marker(line: str) -> str:
     return REGISTERED_LIST_MARKER_RE.sub("", line, count=1)
@@ -933,6 +1036,181 @@ def _registered_separator_remainders(
         if remainder:
             remainders.append(remainder)
     return tuple(remainders)
+
+
+def _registered_has_negation(tokens: tuple[str, ...]) -> bool:
+    """Recognize only the small negative forms needed by the registered rules."""
+    if any(token in REGISTERED_NEGATION_TOKENS for token in tokens):
+        return True
+    for index in range(len(tokens)):
+        for contraction in REGISTERED_NEGATED_CONTRACTION_PAIRS:
+            if tokens[index : index + len(contraction)] == contraction:
+                return True
+    return False
+
+
+def _registered_sequence_at(
+    tokens: tuple[str, ...], offset: int, sequence: tuple[str, ...]
+) -> bool:
+    return tokens[offset : offset + len(sequence)] == sequence
+
+
+def _registered_polarity_segments(line: str) -> tuple[tuple[tuple[str, ...], bool], ...]:
+    """Split one physical line into bounded clauses and protected quote suffixes.
+
+    The split is intentionally line-local.  A registered quoting introducer
+    protects only the first clause after its colon; punctuation or a later
+    conjunction starts a new candidate.  This is a source dialect rule, not a
+    general English parser.
+    """
+    stripped = _strip_registered_list_marker(line).strip()
+    segments: list[tuple[tuple[str, ...], bool]] = []
+    for sentence in re.split(r"[.!?;—–]+", stripped):
+        if not sentence.strip():
+            continue
+        colon_parts = re.split(r"[:：]", sentence)
+        if len(colon_parts) == 1:
+            tokens = _registered_tokens(sentence)
+            if tokens:
+                segments.append((tokens, False))
+            continue
+        prefix_tokens = _registered_tokens(colon_parts[0])
+        if prefix_tokens:
+            segments.append((prefix_tokens, False))
+        for part_index, part in enumerate(colon_parts[1:]):
+            tokens = _registered_tokens(part)
+            if tokens:
+                segments.append((tokens, part_index == 0 and prefix_tokens in REGISTERED_QUOTING_INTRODUCERS))
+    return tuple(segments)
+
+
+def _registered_polarity_candidates(
+    line: str,
+) -> tuple[tuple[tuple[str, ...], bool], ...]:
+    """Return a full bounded clause and later conjunction suffixes."""
+    candidates: list[tuple[tuple[str, ...], bool]] = []
+    for tokens, protected in _registered_polarity_segments(line):
+        candidates.append((tokens, protected))
+        # Check the full clause first: ``content, task, or tool failure`` and
+        # similar registered subjects contain ``or``/``and`` themselves.
+        for index, token in enumerate(tokens):
+            if token in {"and", "or", "but"} and index + 1 < len(tokens):
+                candidates.append((tokens[index + 1 :], protected and index == 0))
+    return tuple(candidates)
+
+
+def _registered_app_task_polarity(tokens: tuple[str, ...]) -> bool:
+    for subject in sorted(REGISTERED_APP_TASK_SUBJECTS, key=len, reverse=True):
+        if not _registered_sequence_at(tokens, 0, subject):
+            continue
+        rest = tokens[len(subject) :]
+        for modal in sorted(REGISTERED_MODAL_FAMILIES, key=len, reverse=True):
+            if not _registered_sequence_at(rest, 0, modal):
+                continue
+            modal_end = len(modal)
+            if _registered_has_negation(rest[:modal_end]):
+                continue
+            for action in sorted(REGISTERED_APP_TASK_ACTIONS, key=len, reverse=True):
+                if not _registered_sequence_at(rest, modal_end, action):
+                    continue
+                action_end = modal_end + len(action)
+                if _registered_has_negation(rest[:action_end]):
+                    continue
+                if any(
+                    _registered_sequence_at(rest, action_end, tail)
+                    for tail in REGISTERED_UNAUTHORIZED_TAILS
+                ):
+                    return True
+        for action in REGISTERED_APP_TASK_DIRECT_ACTIONS:
+            if not _registered_sequence_at(rest, 0, action):
+                continue
+            action_end = len(action)
+            if _registered_has_negation(rest[:action_end]):
+                continue
+            if any(
+                _registered_sequence_at(rest, action_end, tail)
+                for tail in REGISTERED_UNAUTHORIZED_TAILS
+            ):
+                return True
+    return False
+
+
+def _registered_failure_polarity(tokens: tuple[str, ...]) -> bool:
+    for subject in sorted(REGISTERED_FAILURE_SUBJECTS, key=len, reverse=True):
+        if not _registered_sequence_at(tokens, 0, subject):
+            continue
+        rest = tokens[len(subject) :]
+        for modal in sorted(REGISTERED_MODAL_FAMILIES, key=len, reverse=True):
+            if not _registered_sequence_at(rest, 0, modal):
+                continue
+            modal_end = len(modal)
+            if _registered_has_negation(rest[:modal_end]):
+                continue
+            for action in sorted(REGISTERED_FAILURE_ACTIONS, key=len, reverse=True):
+                if not _registered_sequence_at(rest, modal_end, action):
+                    continue
+                action_end = modal_end + len(action)
+                if _registered_has_negation(rest[:action_end]):
+                    continue
+                if any(
+                    _registered_sequence_at(rest, action_end, tail)
+                    for tail in REGISTERED_FAILURE_AUTHORITY_TAILS
+                ):
+                    return True
+        for action in sorted(REGISTERED_FAILURE_ACTIONS, key=len, reverse=True):
+            if not _registered_sequence_at(rest, 0, action):
+                continue
+            action_end = len(action)
+            if _registered_has_negation(rest[:action_end]):
+                continue
+            if any(
+                _registered_sequence_at(rest, action_end, tail)
+                for tail in REGISTERED_FAILURE_AUTHORITY_TAILS
+            ):
+                return True
+    return False
+
+
+def _registered_polarity_kind(tokens: tuple[str, ...]) -> str | None:
+    if _registered_app_task_polarity(tokens):
+        return "app"
+    if _registered_failure_polarity(tokens):
+        return "failure"
+    return None
+
+
+def _registered_polarity_violations(filename: str, text: str) -> list[str]:
+    """Reject only the two registered affirmative protected predicates."""
+    errors: list[str] = []
+    # The controlled Markdown source scanner masks fences/comments/inline code,
+    # but intentionally leaves list items as independent physical clauses.
+    flags = _source_flags(text, mask_containers=False)
+    for index, line in enumerate(_source_lines(text)):
+        if index >= len(flags) or not flags[index]:
+            continue
+        for tokens, protected in _registered_polarity_candidates(line):
+            if protected:
+                continue
+            kind = _registered_polarity_kind(tokens)
+            if kind is not None:
+                errors.append(
+                    f"{filename}:{index + 1} {REGISTERED_POLARITY_DIAGNOSTICS[kind]}"
+                )
+    return errors
+
+
+def _reject_registered_polarity(
+    errors: list[str], label: str, text: str | tuple[str, ...]
+) -> None:
+    section_texts = (text,) if isinstance(text, str) else text
+    for section_text in section_texts:
+        for line in section_text.splitlines():
+            for tokens, protected in _registered_polarity_candidates(line):
+                if protected:
+                    continue
+                kind = _registered_polarity_kind(tokens)
+                if kind is not None:
+                    errors.append(f"{label}: {REGISTERED_POLARITY_DIAGNOSTICS[kind]}")
 
 
 def _registered_context_before_line(lines: list[str], line_index: int) -> bool:
@@ -1100,6 +1378,7 @@ def _validate_common_agent_semantics(
 
     for literals, diagnostic in GLOBAL_CONTRADICTORY_PERMISSION_RULES:
         _reject_registered_literals(errors, label, operational_text, literals, diagnostic)
+    _reject_registered_polarity(errors, label, operational_text)
 
     _require_anchor(
         errors,
@@ -1584,6 +1863,7 @@ def _source_flags(
     marker_lines: set[str] | None = None,
     *,
     mask_inline_code: bool = True,
+    mask_containers: bool = True,
 ) -> list[bool]:
     """Mark only unindented, unquoted, unmasked source lines as active."""
     marker_lines = marker_lines or set()
@@ -1621,7 +1901,7 @@ def _source_flags(
             and (len(line[:index]) - len(line[:index].rstrip("\\"))) % 2 == 0
             for index, char in enumerate(line)
         )
-        flags.append(active and not container and not inline_code)
+        flags.append(active and (not mask_containers or not container) and not inline_code)
     return flags
 
 def _source_dialect_violations(filename: str, text: str) -> list[str]:
@@ -1640,6 +1920,10 @@ def _source_dialect_violations(filename: str, text: str) -> list[str]:
         if fence is not None:
             if _fence_close(line, fence):
                 fence = None
+            elif re.fullmatch(r"[ ]{0,3}#{2,3}(?:[ \t]+.*)?[ \t]*", line):
+                errors.append(
+                    f"{filename}:{number} contains an unsupported H2/H3 heading inside a fenced source block"
+                )
             elif re.fullmatch(rf"[ ]{{0,3}}{re.escape(fence[0])}{{{fence[1]},}}.*", line):
                 errors.append(f"{filename}:{number} contains an invalid fenced close suffix")
         else:
@@ -1735,6 +2019,20 @@ def _external_or_fragment(target: str) -> bool:
 def _has_link_syntax_without_token(line: str) -> bool:
     return any(marker in line for marker in ("](", "][", "]:"))
 
+
+def _active_direct_inline_target(line: str, active: bool) -> str | None:
+    """Return a target only for its exact active inline-link source line."""
+    if not active:
+        return None
+    tokens = _inline_tokens(line)
+    if len(tokens) != 1:
+        return None
+    for target, source in DIRECT_LINK_LINES.items():
+        if line == source and tokens[0][3] == target:
+            return target
+    return None
+
+
 def _reference_file_link_violations(filename: str, text: str) -> list[str]:
     errors: list[str] = []
     for number, line in enumerate(_source_lines(text), 1):
@@ -1769,17 +2067,21 @@ def reference_topology_violations(skill_text: str, reference_map: dict[str, str]
     skill_lines = _source_lines(skill_text)
     expected_counts = {target: 0 for target in DIRECT_LINK_LINES}
     for index, line in enumerate(skill_lines):
-        exact_target = next((target for target, source in DIRECT_LINK_LINES.items() if line == source), None)
-        if exact_target is not None and index < len(active) and active[index]:
-            expected_counts[exact_target] += 1
+        is_active = index < len(active) and active[index]
+        direct_target = _active_direct_inline_target(line, is_active)
+        if direct_target is not None:
+            expected_counts[direct_target] += 1
         tokens = _inline_tokens(line)
         if tokens:
-            if not (len(tokens) == 1 and exact_target is not None and active[index]):
+            if direct_target is None:
                 errors.append(f"SKILL.md:{index + 1} contains an unsupported non-canonical link")
         elif _has_link_syntax_without_token(line):
             errors.append(f"SKILL.md:{index + 1} contains malformed or multiline link syntax")
         if re.match(r"^\s*\[[^\]\n]+\]:", line) or re.search(r"<a\b|\bhref\s*=", line, re.IGNORECASE):
-            errors.append(f"SKILL.md:{index + 1} contains a reference definition or HTML anchor")
+            errors.append(
+                f"SKILL.md:{index + 1} contains a reference definition or HTML anchor; "
+                "a definition cannot satisfy required active direct inline-link topology"
+            )
         if "references/" in line and line not in DIRECT_LINK_LINES.values():
             errors.append(f"SKILL.md:{index + 1} contains an unsupported reference path")
         if ".md" in line and line not in DIRECT_LINK_LINES.values():
@@ -1889,6 +2191,9 @@ def semantic_contract_violations(skill_text: str, reference_map: dict[str, str],
     errors.extend(_source_dialect_violations("SKILL.md", skill_text))
     for filename, text in reference_map.items():
         errors.extend(_source_dialect_violations(filename, text))
+    errors.extend(_registered_polarity_violations("SKILL.md", skill_text))
+    for filename, text in reference_map.items():
+        errors.extend(_registered_polarity_violations(filename, text))
     errors.extend(canonical_block_violations("SKILL.md", skill_text))
     if "model-routing.md" in reference_map:
         errors.extend(canonical_block_violations("model-routing.md", reference_map["model-routing.md"]))
