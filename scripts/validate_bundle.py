@@ -726,15 +726,38 @@ REGISTERED_DIRECT_CLAUSE_PREFIXES = (
     ("this", "task"),
     ("the", "task"),
 )
+REGISTERED_NEUTRAL_COLON_PREFIXES = (
+    ("allowed",),
+    ("allowed", "action"),
+    ("allowed", "actions"),
+    ("allowed", "actions", "and", "tools"),
+    ("permission",),
+    ("permissions",),
+    ("operational", "rule"),
+    ("rule",),
+    ("policy",),
+    ("contract",),
+)
 
 
 def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
-    """Return normalized sentence/clause tokens for closed-literal matching."""
+    """Return bounded clauses while preserving wrapping and colon context."""
     clauses: list[tuple[str, ...]] = []
-    for raw_clause in re.split(r"[\r\n.!?;:]+", text):
+    wrapped_text = re.sub(r"[\r\n]+", " ", text)
+    for raw_clause in re.split(r"[.!?;]+", wrapped_text):
         normalized = _normalize_registered_text(raw_clause)
         if normalized:
             clauses.append(tuple(normalized.split()))
+        colon_parts = raw_clause.split(":")
+        for boundary in range(1, len(colon_parts)):
+            context = tuple(
+                _normalize_registered_text(":".join(colon_parts[:boundary])).split()
+            )
+            if context not in REGISTERED_NEUTRAL_COLON_PREFIXES:
+                continue
+            direct_clause = _normalize_registered_text(":".join(colon_parts[boundary:]))
+            if direct_clause:
+                clauses.append(tuple(direct_clause.split()))
     return tuple(clauses)
 
 

@@ -589,6 +589,42 @@ class AgentContractTests(unittest.TestCase):
                 )
                 self.assertEqual(self.errors_for(filename, candidate), [], sentence)
 
+    def test_bounded_matcher_preserves_wrapping_and_colon_context(self) -> None:
+        rejected = (
+            (
+                "This role may\nexpose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "THIS   ROLE MAY:\nEXPOSE, SECRETS!",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "Allowed actions: This role may expose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+        )
+        for sentence, diagnostic in rejected:
+            with self.subTest(sentence=sentence):
+                candidate = inject_after_heading(
+                    AGENT_SOURCES["architect.toml"],
+                    "ALLOWED ACTIONS AND TOOLS",
+                    sentence,
+                )
+                self.assert_diagnostic(self.errors_for("architect.toml", candidate), diagnostic)
+        benign = (
+            "Never state:\nthis role may expose secrets.",
+            "Do not say: this role may expose secrets.",
+        )
+        for sentence in benign:
+            with self.subTest(sentence=sentence):
+                candidate = inject_after_heading(
+                    AGENT_SOURCES["architect.toml"],
+                    "ALLOWED ACTIONS AND TOOLS",
+                    sentence,
+                )
+                self.assertEqual(self.errors_for("architect.toml", candidate), [], sentence)
+
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
         source = AGENT_SOURCES[filename]
