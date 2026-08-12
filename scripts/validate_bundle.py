@@ -212,7 +212,7 @@ def _fence_start(line: str) -> tuple[str, int] | None:
 
 def _fence_close(line: str, fence: tuple[str, int]) -> bool:
     marker, length = fence
-    return re.fullmatch(rf"[ ]{{0,3}}{re.escape(marker)}{{{length},}}\s*", line) is not None
+    return re.fullmatch(rf"[ ]{{0,3}}{re.escape(marker)}{{{length},}}[ \t]*", line) is not None
 
 
 def _source_flags(
@@ -273,10 +273,12 @@ def _source_dialect_violations(filename: str, text: str) -> list[str]:
         if "<!--" in line or "-->" in line or re.search(r"<[^>\n]+>", line):
             errors.append(f"{filename}:{number} contains unsupported angle or HTML source syntax")
     fence: tuple[str, int] | None = None
-    for line in text.splitlines():
+    for number, line in enumerate(text.splitlines(), 1):
         if fence is not None:
             if _fence_close(line, fence):
                 fence = None
+            elif re.fullmatch(rf"[ ]{{0,3}}{re.escape(fence[0])}{{{fence[1]},}}.*", line):
+                errors.append(f"{filename}:{number} contains an invalid fenced close suffix")
         else:
             fence = _fence_start(line)
     if fence is not None:

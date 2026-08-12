@@ -313,6 +313,9 @@ class SkillContractTests(unittest.TestCase):
         self.assertEqual(tilde_closed, [False, False, False, True])
         unclosed = VALIDATOR._source_flags("   ```text\n## Contract\n## References\n")
         self.assertEqual(unclosed, [False, False, False])
+        self.assertTrue(VALIDATOR._fence_close("  ``` \t", ("`", 3)))
+        for suffix in ("\u00a0", "\v", "\f", "\r"):
+            self.assertFalse(VALIDATOR._fence_close("```" + suffix, ("`", 3)))
         self.assertEqual(VALIDATOR._source_dialect_violations("model-routing.md", self.routing), [])
 
     def test_indented_and_tilde_unclosed_fences_fail_closed_before_contracts(self) -> None:
@@ -329,6 +332,23 @@ class SkillContractTests(unittest.TestCase):
         routing = self.routing.replace(
             "## Canonical routing contract\n",
             " ~~~lang`info\n## Canonical routing contract\n",
+            1,
+        )
+        references = dict(self.references)
+        references["model-routing.md"] = routing
+        self.assert_semantic_rejects(self.skill, references)
+        self.assert_topology_rejects(self.skill, references)
+
+    def test_nbsp_is_not_a_fence_close_for_skill_and_routing(self) -> None:
+        false_close = "```\u00a0\n"
+        for section in ("## Contract\n", "## References\n"):
+            candidate = self.skill.replace(section, "```text\n" + section + false_close, 1)
+            self.assert_semantic_rejects(candidate)
+            self.assert_topology_rejects(candidate)
+
+        routing = self.routing.replace(
+            "## Canonical routing contract\n",
+            "```text\n## Canonical routing contract\n" + false_close,
             1,
         )
         references = dict(self.references)
