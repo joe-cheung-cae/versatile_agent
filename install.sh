@@ -280,15 +280,12 @@ if [[ "$check_only" == "true" ]]; then
     printf 'AGENTS.md activation snippet is missing: %s\n' "$agents_md_destination" >&2
     status=1
   fi
-  if ! python3 -c '
-import json, sys
-path, profile, version = sys.argv[1:]
-try:
-    data = json.load(open(path, encoding="utf-8"))
-except (OSError, ValueError):
-    raise SystemExit(1)
-raise SystemExit(0 if data.get("selected_profile") == profile and data.get("bundle_version") == version else 1)
-' "$manifest_destination" "$profile" "$version"; then
+  if ! python3 "$write_manifest" \
+    --check "$manifest_destination" \
+    --profile "$profile" \
+    --scope "$scope" \
+    --source-version "$version" \
+    2>/dev/null; then
     printf 'Install manifest is missing or does not match profile %s: %s\n' "$profile" "$manifest_destination" >&2
     status=1
   fi
@@ -443,29 +440,18 @@ if [[ "$with_agents_snippet" == "true" ]]; then
   fi
 fi
 
-if ! python3 -c '
-import json, sys
-manifest_path, probe_path, profile, scope, version = sys.argv[1:]
-try:
-    manifest = json.load(open(manifest_path, encoding="utf-8"))
-    probe = json.load(open(probe_path, encoding="utf-8"))
-except (OSError, ValueError):
-    raise SystemExit(1)
-matches = (
-    manifest.get("selected_profile") == profile
-    and manifest.get("scope") == scope
-    and manifest.get("bundle_version") == version
-    and manifest.get("runtime_probe") == probe
-)
-raise SystemExit(0 if matches else 1)
-' "$manifest_destination" "$probe_file" "$profile" "$scope" "$version"; then
+if ! python3 "$write_manifest" \
+  --check "$manifest_destination" \
+  --profile "$profile" \
+  --scope "$scope" \
+  --source-version "$version" \
+  2>/dev/null; then
   backup_path "$manifest_destination" "install-manifest.json"
   python3 "$write_manifest" \
     --output "$manifest_destination" \
     --profile "$profile" \
     --scope "$scope" \
-    --source-version "$version" \
-    --probe "$probe_file"
+    --source-version "$version"
 fi
 
 printf 'Installed Versatile Agent %s\n' "$version"

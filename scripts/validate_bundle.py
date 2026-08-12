@@ -204,6 +204,19 @@ def validate_route_research(root: Path, check: Validation) -> None:
     )
 
 
+def validate_runtime_audit(root: Path, check: Validation) -> None:
+    helper = root / "payload/skills/versatile-dev/scripts/runtime_audit.py"
+    focused_test = root / "tests/test_manifest_audit.py"
+    check.require(helper.is_file(), f"missing runtime-audit helper: {helper}")
+    check.require(focused_test.is_file(), f"missing manifest/audit test: {focused_test}")
+    for path in (helper, focused_test):
+        if path.is_file():
+            try:
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+            except (OSError, SyntaxError) as exc:
+                check.errors.append(f"invalid Python manifest/audit file {path}: {exc}")
+
+
 def validate_root(root: Path, check: Validation) -> None:
     for relative in (
         "VERSION",
@@ -248,6 +261,7 @@ def main() -> int:
     validate_agents(root, check)
     validate_runtime_records(root, check)
     validate_route_research(root, check)
+    validate_runtime_audit(root, check)
 
     if check.errors:
         for error in check.errors:

@@ -74,6 +74,100 @@ for filename, name, model, effort in (
 PY
 }
 
+assert_install_manifest() {
+  local manifest_path="$1"
+  local expected_scope="$2"
+  local expected_profile="$3"
+  assert_file "$manifest_path"
+  python3 - "$manifest_path" "$expected_scope" "$expected_profile" <<'PY'
+import json
+import sys
+
+path, expected_scope, expected_profile = sys.argv[1:]
+with open(path, encoding="utf-8") as stream:
+    document = json.load(stream)
+
+expected_fields = {
+    "artifact_kind",
+    "schema_version",
+    "bundle_version",
+    "installed_at",
+    "scope",
+    "selected_profile",
+    "installed_agents",
+    "configured_researchers",
+}
+if set(document) != expected_fields:
+    raise SystemExit(f"unexpected installation manifest fields: {sorted(document)}")
+if document["artifact_kind"] != "installation_manifest" or document["schema_version"] != 2:
+    raise SystemExit(f"unexpected installation manifest identity: {document}")
+if document["scope"] != expected_scope or document["selected_profile"] != expected_profile:
+    raise SystemExit(f"unexpected installation selection: {document}")
+expected_agents = {
+    "code_mapper",
+    "architect",
+    "implementer",
+    "tester",
+    "test_validator",
+    "reviewer",
+    "gpu_reviewer",
+    "numerics_reviewer",
+    "parallelism_reviewer",
+    "performance_profiler",
+    "security_reviewer",
+    "docs_researcher_luna",
+    "docs_researcher_terra",
+}
+if len(document["installed_agents"]) != 13 or set(document["installed_agents"]) != expected_agents:
+    raise SystemExit(f"unexpected installed agent identities: {document['installed_agents']}")
+expected_researchers = {
+    "docs_researcher_luna": {
+        "agent_type": "docs_researcher_luna",
+        "model": "gpt-5.6-luna",
+        "effort": "max",
+    },
+    "docs_researcher_terra": {
+        "agent_type": "docs_researcher_terra",
+        "model": "gpt-5.6-terra",
+        "effort": "high",
+    },
+}
+if document["configured_researchers"] != expected_researchers:
+    raise SystemExit(f"unexpected configured researchers: {document['configured_researchers']}")
+serialized = json.dumps(document, sort_keys=True)
+for forbidden in ("runtime_probe", "observed", "effective", "fallback_success", "actual_runtime", "capability"):
+    if forbidden in serialized:
+        raise SystemExit(f"installation manifest contains forbidden runtime semantics: {forbidden}")
+PY
+}
+
+assert_manifest_rewrite() {
+  local name="$1"
+  local target="$test_root/manifest-rewrite-$name"
+  local manifest_path="$target/.codex/versatile-agent/install-manifest.json"
+  mkdir -p "$target"
+  "$bundle_root/install.sh" --scope project --target "$target" --profile terra-fallback >/dev/null
+  python3 - "$manifest_path" "$name" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path, name = sys.argv[1:]
+path = Path(path)
+if name == "legacy":
+    path.write_text('{"schema_version": 1, "selected_profile": "terra-fallback"}\n', encoding="utf-8")
+elif name == "extra":
+    document = json.loads(path.read_text(encoding="utf-8"))
+    document["runtime_probe"] = {}
+    path.write_text(json.dumps(document), encoding="utf-8")
+else:
+    raise SystemExit(f"unsupported rewrite fixture: {name}")
+PY
+  "$bundle_root/install.sh" --scope project --target "$target" --profile terra-fallback >/dev/null
+  assert_install_manifest "$manifest_path" project terra-fallback
+  [[ "$(backup_count "$target")" == "1" ]] || fail "$name manifest rewrite did not preserve one backup"
+}
+
 sha256_file() {
   python3 - "$1" <<'PY'
 import hashlib
@@ -315,6 +409,7 @@ printf '%s\n' "$project_luna_install_output" | grep -Fq '13 common custom agents
 
 assert_dir "$project_luna/.agents/skills/versatile-dev"
 assert_file "$project_luna/.codex/versatile-agent/install-manifest.json"
+assert_install_manifest "$project_luna/.codex/versatile-agent/install-manifest.json" project luna-v1
 assert_dual_researcher_bundle "$project_luna/.codex/agents"
 assert_contains "$project_luna/.codex/config.toml" 'model = "keep-me"'
 assert_contains "$project_luna/.codex/config.toml" 'custom_key = "preserve"'
@@ -323,6 +418,8 @@ assert_contains "$project_luna/.codex/config.toml" 'max_concurrent_threads_per_s
 assert_contains "$project_luna/AGENTS.md" '## Versatile development workflow'
 
 find "$project_luna" -maxdepth 1 -type d -name '.codex-versatile-backup-*' | grep -q . || fail "expected config backup"
+assert_manifest_rewrite legacy
+assert_manifest_rewrite extra
 
 "$bundle_root/install.sh" \
   --scope project \
@@ -346,11 +443,13 @@ marker_count="$(grep -Fc '## Versatile development workflow' "$project_luna/AGEN
 project_fallback="$test_root/project-fallback"
 mkdir -p "$project_fallback"
 "$bundle_root/install.sh" --scope project --target "$project_fallback" --profile terra-fallback >/dev/null
+assert_install_manifest "$project_fallback/.codex/versatile-agent/install-manifest.json" project terra-fallback
 assert_dual_researcher_bundle "$project_fallback/.codex/agents"
 
 project_luna_v2="$test_root/project-luna-v2"
 mkdir -p "$project_luna_v2"
 "$bundle_root/install.sh" --scope project --target "$project_luna_v2" --profile luna-v2 >/dev/null
+assert_install_manifest "$project_luna_v2/.codex/versatile-agent/install-manifest.json" project luna-v2
 assert_dual_researcher_bundle "$project_luna_v2/.codex/agents"
 
 fake_home="$test_root/user-home"
@@ -365,6 +464,7 @@ assert_file "$fake_home/.agents/skills/versatile-dev/SKILL.md"
 assert_file "$fake_codex_home/agents/reviewer.toml"
 assert_file "$fake_codex_home/config.toml"
 assert_file "$fake_codex_home/versatile-agent/install-manifest.json"
+assert_install_manifest "$fake_codex_home/versatile-agent/install-manifest.json" user terra-fallback
 assert_dual_researcher_bundle "$fake_codex_home/agents"
 
 project_dry="$test_root/project-dry"
@@ -453,6 +553,7 @@ cp "$user_migrate_legacy" "$user_migrate_original"
   --codex-home "$user_migrate_codex" \
   --profile terra-fallback >/dev/null
 assert_absent "$user_migrate_legacy"
+assert_install_manifest "$user_migrate_codex/versatile-agent/install-manifest.json" user terra-fallback
 assert_dual_researcher_bundle "$user_migrate_codex/agents"
 assert_migration_backup "$user_migrate_codex" "$user_migrate_original"
 "$bundle_root/install.sh" \
@@ -496,7 +597,57 @@ mkdir -p "$project_auto_v1"
   --codex-bin "$fake_v1" \
   --app-codex-bin "$test_root/missing-app-codex" >/dev/null
 assert_dual_researcher_bundle "$project_auto_v1/.codex/agents"
-assert_contains "$project_auto_v1/.codex/versatile-agent/install-manifest.json" '"selected_profile": "luna-v1"'
+assert_install_manifest "$project_auto_v1/.codex/versatile-agent/install-manifest.json" project luna-v1
+
+fake_changing="$test_root/fake-codex-changing"
+fake_changing_state="$test_root/fake-codex-changing.state"
+cat > "$fake_changing" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  --version)
+    count=0
+    if [[ -f "$VERSATILE_TEST_COUNTER" ]]; then
+      count="$(< "$VERSATILE_TEST_COUNTER")"
+    fi
+    count=$((count + 1))
+    printf '%s\n' "$count" > "$VERSATILE_TEST_COUNTER"
+    printf 'codex-cli changing-%s\n' "$count"
+    ;;
+  features)
+    printf 'multi_agent stable true\n'
+    printf 'multi_agent_v2 stable false\n'
+    ;;
+  debug)
+    printf '%s\n' '{"models":[{"slug":"gpt-5.6-luna","supported_reasoning_levels":[{"effort":"max"}]}]}'
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod +x "$fake_changing"
+
+project_probe_change="$test_root/project-probe-change"
+mkdir -p "$project_probe_change"
+VERSATILE_TEST_COUNTER="$fake_changing_state" "$bundle_root/install.sh" \
+  --scope project \
+  --target "$project_probe_change" \
+  --profile auto \
+  --codex-bin "$fake_changing" \
+  --app-codex-bin "$test_root/missing-app-codex" >/dev/null
+assert_install_manifest "$project_probe_change/.codex/versatile-agent/install-manifest.json" project luna-v1
+probe_manifest_before="$(sha256_file "$project_probe_change/.codex/versatile-agent/install-manifest.json")"
+probe_backups_before="$(backup_count "$project_probe_change")"
+VERSATILE_TEST_COUNTER="$fake_changing_state" "$bundle_root/install.sh" \
+  --scope project \
+  --target "$project_probe_change" \
+  --profile auto \
+  --codex-bin "$fake_changing" \
+  --app-codex-bin "$test_root/missing-app-codex" >/dev/null
+probe_manifest_after="$(sha256_file "$project_probe_change/.codex/versatile-agent/install-manifest.json")"
+probe_backups_after="$(backup_count "$project_probe_change")"
+[[ "$probe_manifest_before" == "$probe_manifest_after" ]] || fail 'changing probe facts rewrote an unchanged installation manifest'
+[[ "$probe_backups_before" == "$probe_backups_after" ]] || fail 'changing probe facts created an unnecessary backup'
+assert_install_manifest "$project_probe_change/.codex/versatile-agent/install-manifest.json" project luna-v1
 
 fake_v2="$test_root/fake-codex-v2"
 cat > "$fake_v2" <<'EOF'
@@ -527,7 +678,7 @@ mkdir -p "$project_auto_v2"
   --codex-bin "$fake_v2" \
   --app-codex-bin "$test_root/missing-app-codex" >/dev/null
 assert_dual_researcher_bundle "$project_auto_v2/.codex/agents"
-assert_contains "$project_auto_v2/.codex/versatile-agent/install-manifest.json" '"selected_profile": "terra-fallback"'
+assert_install_manifest "$project_auto_v2/.codex/versatile-agent/install-manifest.json" project terra-fallback
 
 project_auto_v2_luna="$test_root/project-auto-v2-luna"
 mkdir -p "$project_auto_v2_luna"
@@ -539,6 +690,6 @@ mkdir -p "$project_auto_v2_luna"
   --app-codex-bin "$test_root/missing-app-codex" \
   --native-v2-luna yes >/dev/null
 assert_dual_researcher_bundle "$project_auto_v2_luna/.codex/agents"
-assert_contains "$project_auto_v2_luna/.codex/versatile-agent/install-manifest.json" '"selected_profile": "terra-fallback"'
+assert_install_manifest "$project_auto_v2_luna/.codex/versatile-agent/install-manifest.json" project terra-fallback
 
 printf 'Installer matrix passed: project/user, historical migration, conflict fail-closed, all profiles, 13 unique dual-researcher agents, merge, backup, check, dry-run, and idempotency.\n'

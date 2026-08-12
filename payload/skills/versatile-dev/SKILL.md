@@ -26,7 +26,9 @@ Before the first delegation in a task:
    `observed_effective_effort`; do not infer them from configuration or probes.
 4. Apply the target or current-legacy state rules in
    [references/model-routing.md](references/model-routing.md). Record a complete
-   per-attempt audit rather than inferring a result from configuration.
+   per-attempt audit through `scripts/runtime_audit.py` rather than inferring a
+   result from configuration. The audit is a separate `runtime_route_audit`
+   artifact for one attempt; it is not part of the installation manifest.
 5. If required agent exposure or effective route metadata is absent, conflicting,
    or unobservable, stop as `STOP_UNVERIFIED`. Do not substitute a model or
    infer success.
@@ -156,3 +158,17 @@ Finish only when all applicable conditions hold:
 
 Report what changed, key decisions, validation, review outcome, observed effective
 routing (or `STOP_UNVERIFIED` when it cannot be established), and remaining risks.
+
+Installation and runtime audit handoff
+
+The installer writes a closed schema-v2 `installation_manifest` containing only
+installed/configured facts: bundle version, scope, legacy selected profile, the
+13 installed agent identities, and the two configured researcher pins. It never
+fills `observed_*`, `effective_*`, fallback success, capability, or probe fields.
+
+For every native or explicitly separated App-task attempt, writers emit a separate
+schema-v1 `runtime_route_audit` with `scripts/runtime_audit.py validate` or
+`canonicalize`. Preserve literal `unknown` for unavailable facts. Only same-attempt
+native runtime details may populate the complete observed effective tuple; the
+installation manifest, TOML, diagnostic probe, and App-task details cannot supply
+native effective facts.
