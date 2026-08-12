@@ -81,6 +81,38 @@ class SkillContractTests(unittest.TestCase):
         errors = self.validate_materialized({"payload/skills/versatile-dev/SKILL.md": b"\xff\n"})
         self.assertTrue(any("invalid UTF-8 controlled source" in error for error in errors))
 
+    def test_split_raw_html_wrappers_fail_closed_in_memory_and_on_disk(self) -> None:
+        begin, end, _ = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"]
+        split_open = '<div\nclass="masked">\n'
+        split_close = '\n</div\n>\n'
+        wrapped_block = self.skill.replace(begin, split_open + begin, 1).replace(end, end + split_close, 1)
+        self.assert_semantic_rejects(wrapped_block)
+        self.assert_topology_rejects(wrapped_block)
+
+        sources = list(VALIDATOR.DIRECT_LINK_LINES.values())
+        wrapped_links = self.skill.replace(sources[0], split_open + sources[0], 1).replace(
+            sources[-1], sources[-1] + split_close, 1
+        )
+        self.assert_semantic_rejects(wrapped_links)
+        self.assert_topology_rejects(wrapped_links)
+
+        routing_begin, routing_end, _ = VALIDATOR.CANONICAL_BLOCKS["model-routing.md"]
+        wrapped_routing = self.routing.replace(
+            routing_begin, split_open + routing_begin, 1
+        ).replace(routing_end, routing_end + split_close, 1)
+        references = dict(self.references)
+        references["model-routing.md"] = wrapped_routing
+        self.assert_semantic_rejects(self.skill, references)
+        self.assert_topology_rejects(self.skill, references)
+
+        mutations = {
+            "payload/skills/versatile-dev/SKILL.md": wrapped_block.encode("utf-8"),
+            "payload/skills/versatile-dev/references/model-routing.md": wrapped_routing.encode("utf-8"),
+        }
+        errors = self.validate_materialized(mutations)
+        self.assertTrue(any(error.startswith("SKILL.md:") and "unsupported angle or HTML" in error for error in errors))
+        self.assertTrue(any(error.startswith("model-routing.md:") and "unsupported angle or HTML" in error for error in errors))
+
     def test_frontmatter_trigger_boundaries_and_prompt(self) -> None:
         block, errors = VALIDATOR._frontmatter(self.skill)
         self.assertEqual(errors, [])

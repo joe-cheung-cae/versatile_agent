@@ -295,7 +295,7 @@ def _source_dialect_violations(filename: str, text: str) -> list[str]:
     for number, line in enumerate(lines, 1):
         if line in marker_lines:
             continue
-        if "<!--" in line or "-->" in line or re.search(r"<[^>\n]+>", line):
+        if "<" in line or "-->" in line:
             errors.append(f"{filename}:{number} contains unsupported angle or HTML source syntax")
     fence: tuple[str, int] | None = None
     for number, line in enumerate(lines, 1):
