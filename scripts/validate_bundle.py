@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import re
 import sys
 import tomllib
@@ -93,6 +94,9 @@ CONTRACT_CLAUSE_SPLIT_RE = re.compile(
 SENSITIVE_CONNECTOR_RE = re.compile(
     r"(?:\b(?:and|yet|or|plus|while|whereas|but|however|although)\b|,(?=\s+))"
 )
+RAW_HTML_LINK_TAG_RE = re.compile(r"<\s*/?\s*a(?:\s|/?>)", re.IGNORECASE)
+RAW_HTML_HEADING_TAG_RE = re.compile(r"<\s*/?\s*h[1-6](?:\s|/?>)", re.IGNORECASE)
+HTML_ENTITY_RE = re.compile(r"&(?:#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});", re.IGNORECASE)
 SENSITIVE_PREDICATE_START_RE = re.compile(
     r"^(?:is|are|was|were|may|can|could|will|must|should|do|does|did|"
     r"authorize|authorizes|allow|allows|require|requires|rely|relies|"
@@ -117,6 +121,15 @@ NEGATED_ELLIPTICAL_BASE_RE = re.compile(
     r"qualify|reason|fallback)\b"
 )
 NEGATED_CLAIM_RE = re.compile(r"\b(?:do|does|did)\s+not\s+claim\s+that\b")
+SENSITIVE_ELLIPSIS_START_RE = re.compile(
+    r"^(?:they|it|those|these|that|this(?:\s+skill)?|"
+    r"(?:the\s+)?(?:probe|manifest)|"
+    r"(?:content|tool|task|timeout|unknown)(?:\s+\w+){0,2})\b"
+)
+SENSITIVE_ELLIPSIS_WORD_RE = re.compile(
+    r"\b(?:do|does|did|can|could|may|might|will|would|qualif\w*|"
+    r"carr\w*|rely|relies|inherit|inherits|confer|confers)\b"
+)
 
 
 def _normalize_contract_text(text: str) -> str:
@@ -409,7 +422,42 @@ SENSITIVE_CONTRACT_POLICIES: tuple[_SensitiveContractPolicy, ...] = (
 )
 
 
-def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy) -> list[str]:
+def _is_sensitive_ellipsis(fragment: str, policy: _SensitiveContractPolicy) -> bool:
+    """Recognize one bounded auxiliary/pronoun continuation in a policy group."""
+
+    if SENSITIVE_ELLIPSIS_START_RE.match(fragment) is None:
+        return False
+    if SENSITIVE_ELLIPSIS_WORD_RE.search(fragment) is None:
+        return False
+    return policy.action.search(fragment) is not None or bool(
+        SENSITIVE_ELLIPSIS_WORD_RE.search(fragment)
+    )
+
+
+def _last_policy_action(clause: str, policy: _SensitiveContractPolicy) -> str | None:
+    matches = [match.group(0) for match in policy.action.finditer(clause)]
+    return matches[-1] if matches else None
+
+
+def _inherited_sensitive_fragments(
+    clause: str,
+    previous_clause: str | None,
+    policy: _SensitiveContractPolicy,
+) -> list[str]:
+    if previous_clause is None or not _is_sensitive_ellipsis(clause, policy):
+        return []
+    subjects = list(policy.subject.finditer(previous_clause))
+    action = _last_policy_action(previous_clause, policy)
+    if not subjects or action is None:
+        return []
+    return [f"{subject.group(0)} {clause} {action}" for subject in subjects[-2:]]
+
+
+def _contract_sensitive_fragments(
+    clause: str,
+    policy: _SensitiveContractPolicy,
+    previous_clause: str | None = None,
+) -> list[str]:
     """Return connector-local fragments with immediate subject carry-over.
 
     The Skill contract uses a small controlled vocabulary.  Coordinated
@@ -419,6 +467,7 @@ def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy)
     """
 
     fragments = [clause]
+    fragments.extend(_inherited_sensitive_fragments(clause, previous_clause, policy))
     for boundary in SENSITIVE_CONNECTOR_RE.finditer(clause):
         right = clause[boundary.end() :].strip()
         right = re.sub(
@@ -431,11 +480,15 @@ def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy)
         fragments.append(right)
         left = clause[: boundary.start()]
         subjects = list(policy.subject.finditer(left))
-        if not subjects or policy.action.search(right) is None:
+        if not subjects or (
+            policy.action.search(right) is None
+            and not _is_sensitive_ellipsis(right, policy)
+        ):
             continue
         if (
             SENSITIVE_PREDICATE_START_RE.match(right) is None
             and SENSITIVE_SUBJECT_START_RE.match(right) is None
+            and SENSITIVE_ELLIPSIS_START_RE.match(right) is None
         ):
             continue
         connector = boundary.group(0).strip().casefold()
@@ -451,8 +504,12 @@ def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy)
             for subject in subjects[-2:]:
                 fragments.append(f"{subject.group(0)} does not {right}")
             continue
+        action = _last_policy_action(left, policy)
         for subject in subjects[-2:]:
-            fragments.append(f"{subject.group(0)} {right}")
+            if policy.action.search(right) is None and action is not None:
+                fragments.append(f"{subject.group(0)} {right} {action}")
+            else:
+                fragments.append(f"{subject.group(0)} {right}")
     return fragments
 
 
@@ -495,9 +552,13 @@ def sensitive_contract_violations(texts: tuple[str, ...]) -> list[str]:
     for text in texts:
         lines, _ = _unfenced_lines(text)
         rendered_text = _strip_inline_code_for_contract("\n".join(lines))
-        for clause in _contract_clauses(rendered_text):
+        clauses = _contract_clauses(rendered_text)
+        for index, clause in enumerate(clauses):
+            previous_clause = clauses[index - 1] if index else None
             for policy in SENSITIVE_CONTRACT_POLICIES:
-                for fragment in _contract_sensitive_fragments(clause, policy):
+                for fragment in _contract_sensitive_fragments(
+                    clause, policy, previous_clause
+                ):
                     if policy.subject.search(fragment) and policy.action.search(fragment):
                         if not _sensitive_clause_is_legal(fragment, policy):
                             if policy.label not in violations:
@@ -517,7 +578,7 @@ REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 
 
 def _normalize_markdown_target(raw_target: str) -> str | None:
-    target = raw_target.strip()
+    target = _decode_html_entities(raw_target.strip())
     if target.startswith("<") and target.endswith(">"):
         target = target[1:-1].strip()
     target = unquote(target)
@@ -531,6 +592,27 @@ def _normalize_markdown_target(raw_target: str) -> str | None:
 
 def _normalize_reference_label(label: str) -> str:
     return re.sub(r"\s+", " ", label.casefold().strip())
+
+
+def _decode_html_entities(text: str) -> str:
+    """Decode nested HTML character references in a bounded deterministic pass."""
+
+    decoded = text
+    for _ in range(4):
+        next_value = html.unescape(decoded)
+        if next_value == decoded:
+            return decoded
+        decoded = next_value
+    return decoded
+
+
+def _raw_html_diagnostics(line: str) -> list[str]:
+    diagnostics: list[str] = []
+    if RAW_HTML_LINK_TAG_RE.search(line):
+        diagnostics.append("raw HTML link tag is outside the controlled Markdown dialect")
+    if RAW_HTML_HEADING_TAG_RE.search(line):
+        diagnostics.append("raw HTML heading tag is outside the controlled Markdown dialect")
+    return diagnostics
 
 
 def _fence_marker_details(line: str) -> tuple[str, int, int] | None:
@@ -577,16 +659,6 @@ def _is_indented_code_line(line: str) -> bool:
 LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|\d+[.)])[ \t]+(.*)$")
 
 
-def _strip_blockquote_prefix(line: str) -> str:
-    """Strip rendered blockquote containers while preserving inner indentation."""
-
-    while True:
-        match = re.match(r"^ {0,3}>[ \t]?", line)
-        if match is None:
-            return line
-        line = line[match.end() :]
-
-
 def _container_normalized_lines(text: str) -> list[str]:
     """Normalize a conservative blockquote/list container subset.
 
@@ -599,11 +671,10 @@ def _container_normalized_lines(text: str) -> list[str]:
     normalized: list[str] = []
     list_indent: int | None = None
     for raw_line in text.splitlines():
-        line = _strip_blockquote_prefix(raw_line)
-        list_match = LIST_ITEM_RE.match(line)
-        if list_match is not None:
-            list_indent = len(list_match.group(1))
-            normalized.append(list_match.group(2))
+        line, list_marker_indent = _peel_container_prefixes(raw_line)
+        if list_marker_indent is not None:
+            list_indent = list_marker_indent
+            normalized.append(line)
             continue
 
         if list_indent is not None and line.strip():
@@ -613,11 +684,36 @@ def _container_normalized_lines(text: str) -> list[str]:
             leading_spaces = len(line) - len(line.lstrip(" "))
             continuation_indent = list_indent + 4
             if leading_spaces >= continuation_indent:
-                normalized.append(line[continuation_indent:])
+                continuation, nested_list_indent = _peel_container_prefixes(
+                    line[continuation_indent:]
+                )
+                if nested_list_indent is not None:
+                    list_indent = continuation_indent + nested_list_indent
+                normalized.append(continuation)
                 continue
             list_indent = None
         normalized.append(line)
     return normalized
+
+
+def _peel_container_prefixes(line: str) -> tuple[str, int | None]:
+    """Peel bounded blockquote/list prefixes until the line reaches content."""
+
+    current = line
+    first_list_indent: int | None = None
+    for _ in range(16):
+        blockquote = re.match(r"^ {0,3}>[ \t]?", current)
+        if blockquote is not None:
+            current = current[blockquote.end() :]
+            continue
+        list_match = LIST_ITEM_RE.match(current)
+        if list_match is not None:
+            if first_list_indent is None:
+                first_list_indent = len(list_match.group(1))
+            current = list_match.group(2)
+            continue
+        break
+    return current, first_list_indent
 
 
 def _find_unescaped_character(text: str, start: int, character: str) -> int | None:
@@ -655,9 +751,11 @@ def _balanced_parentheses(text: str) -> bool:
 
 
 def _destination_diagnostic(raw_target: str, kind: str) -> str | None:
-    target = raw_target.strip()
+    target = _decode_html_entities(raw_target.strip())
     if not target:
         return f"empty {kind} destination"
+    if HTML_ENTITY_RE.search(target):
+        return f"unresolved HTML entity in {kind} destination"
     if re.search(r"%(?![0-9a-fA-F]{2})", target):
         return f"invalid percent escape in {kind} destination"
     if target.startswith("<"):
@@ -831,6 +929,7 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
                 label_active = False
                 label_buffer = []
             continue
+        diagnostics.extend(_raw_html_diagnostics(line))
 
         if not label_active:
             definition_diagnostic = _reference_definition_diagnostic(line)
@@ -1093,6 +1192,12 @@ def task_contract_violations(text: str) -> list[str]:
         violations.append("task-contract contains an unclosed fenced code block")
     if any(_invalid_backtick_fence_opener(line) for line in lines):
         violations.append("task-contract contains an invalid backtick fence opener")
+    for line in lines:
+        if _is_indented_code_line(line):
+            continue
+        for diagnostic in _raw_html_diagnostics(line):
+            violations.append(f"task-contract contains unsupported raw HTML: {diagnostic}")
+
     for index, line in enumerate(lines[:-1]):
         if (
             line.strip()

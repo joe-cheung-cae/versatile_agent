@@ -463,6 +463,10 @@ class SkillContractTests(unittest.TestCase):
             "This Skill does not grant permissions, or confers permission.",
             "This Skill does not grant permissions, plus it confers permission.",
             "App tasks are not opt-out, and rely on authorization from prior requests.",
+            "App tasks are not opt-out. They inherit authorization from prior requests.",
+            "App tasks are not opt-out, although those tasks can rely on prior authorization.",
+            "Content failures do not authorize Terra fallback, but tool failures do.",
+            "The manifest does not prove the effective route, while the probe does.",
         )
         for addition in rejected:
             with self.subTest(addition=addition):
@@ -480,6 +484,11 @@ class SkillContractTests(unittest.TestCase):
             "This Skill does not grant permissions.",
             "Content failures do not authorize Terra fallback and tool failures do not authorize Terra fallback.",
             "This Skill does not change the parent model or permissions, guarantee model availability, or perform automatic CLI fallback.",
+            "App tasks are not opt-out. They do not inherit authorization from prior requests.",
+            "Content failures do not authorize Terra fallback. Tool failures do not authorize Terra fallback.",
+            "The manifest does not prove the effective route. The probe does not prove the effective route.",
+            "App tasks are not opt-out. The weather is clear.",
+            "App tasks are not opt-out. They are documented. They inherit authorization from prior requests.",
         )
         for addition in accepted:
             with self.subTest(addition=addition):
@@ -783,6 +792,37 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+        entity_encoded = "[nested](model-routing&amp;#46;md)"
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(entity_encoded),
+            ["model-routing.md"],
+        )
+        entity_map = dict(self.references)
+        entity_map["workflow.md"] += entity_encoded + "\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, entity_map, SKILL_PATH),
+                [],
+            )
+
+        raw_html_map = dict(self.references)
+        raw_html_map["workflow.md"] += '<a href="model-routing.md">nested</a>\n'
+        raw_html_scan = VALIDATOR._scan_rendered_markdown_details(raw_html_map["workflow.md"])
+        self.assertTrue(any("raw HTML link" in item for item in raw_html_scan.diagnostics))
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, raw_html_map, SKILL_PATH),
+                [],
+            )
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details("safe text: 2 < 3 and <angle>").diagnostics,
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details('    <a href="model-routing.md">code</a>').diagnostics,
+            [],
+        )
+
         titled = VALIDATOR._scan_rendered_markdown_details("[nested](model-routing.md \"title\")")
         self.assertTrue(any("whitespace-invalid" in item for item in titled.diagnostics))
 
@@ -938,6 +978,12 @@ class SkillContractTests(unittest.TestCase):
             "- item\n    ## Extra\n",
             "- item\n    ### Extra\n",
             "- item\n    Heading\n    ---\n",
+            "- > ## Extra\n",
+            "- > ### Extra\n",
+            "- 1. ## Extra\n",
+            "- 1. ### Extra\n",
+            "> - > ## Extra\n",
+            "- > Heading\n  > ---\n",
         )
         for mutation in container_heading_mutations:
             with self.subTest(container_heading=mutation), self.assertRaises(AssertionError):
@@ -951,6 +997,17 @@ class SkillContractTests(unittest.TestCase):
             packet,
         )
         self.assertEqual(VALIDATOR.task_contract_violations(closed_hash_packet), [])
+        self.assertTrue(
+            VALIDATOR.task_contract_violations(packet + "\n<h2>Extra</h2>\n")
+        )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + "\nordinary text: 2 < 3\n"),
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + "\n    <h2>code example</h2>\n"),
+            [],
+        )
 
         unclosed = packet + "\n```markdown\n## Extra\n"
         unfenced_lines, unclosed_fence = VALIDATOR._unfenced_lines(unclosed)
