@@ -385,31 +385,138 @@ class AgentContractTests(unittest.TestCase):
     def test_every_role_rejects_registered_contradictory_global_permissions(self) -> None:
         cases = (
             (
+                "destructive command permission",
+                "This role may run destructive commands.",
+                "contradictory destructive-command/operation permission is forbidden",
+            ),
+            (
+                "destructive operation permission variant",
+                "This role may perform destructive operations.",
+                "contradictory destructive-command/operation permission is forbidden",
+            ),
+            (
+                "secret exposure permission",
+                "This role may expose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "secret disclosure permission variant",
+                "This role may disclose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "external contact permission",
+                "This role may contact external systems.",
+                "contradictory external-system contact permission is forbidden",
+            ),
+            (
+                "external call permission variant",
+                "This role may call external systems.",
+                "contradictory external-system contact permission is forbidden",
+            ),
+            (
+                "implicit commit/push/PR permission",
                 "This role may make an implicit commit, push, or PR.",
                 "contradictory implicit commit/push/PR authorization is forbidden",
             ),
             (
+                "implicit pull-request creation permission",
+                "This role may create an implicit pull request.",
+                "contradictory implicit commit/push/PR authorization is forbidden",
+            ),
+            (
+                "implicit commit permission variant",
+                "This role may create an implicit commit.",
+                "contradictory implicit commit/push/PR authorization is forbidden",
+            ),
+            (
+                "parent completion declaration permission",
                 "This role may declare the parent task complete.",
                 "contradictory whole-parent completion authorization is forbidden",
             ),
             (
+                "parent completion claim permission",
+                "This role may claim the parent task is complete.",
+                "contradictory whole-parent completion authorization is forbidden",
+            ),
+            (
+                "parent completion mark permission variant",
+                "This role may mark the entire parent task as complete.",
+                "contradictory whole-parent completion authorization is forbidden",
+            ),
+            (
+                "runtime model/effort/sandbox claim",
                 "This TOML proves runtime model, effort, and sandbox effectiveness.",
                 "contradictory configured runtime-effectiveness claim is forbidden",
             ),
             (
+                "observed runtime behavior claim",
+                "This TOML proves observed runtime behavior.",
+                "contradictory configured runtime-effectiveness claim is forbidden",
+            ),
+            (
+                "effective route/model/effort/sandbox claim variant",
+                "This configuration proves effective route, model, effort, and sandbox effectiveness.",
+                "contradictory configured runtime-effectiveness claim is forbidden",
+            ),
+            (
+                "external mutation permission",
                 "This role may mutate external systems.",
                 "contradictory external-system mutation permission is forbidden",
             ),
             (
-                "This role may make an implicit commit/push/PR.",
-                "contradictory implicit commit/push/PR authorization is forbidden",
+                "compound external contact/mutation permission variant",
+                "This role may contact or mutate external systems.",
+                "contradictory external-system mutation permission is forbidden",
             ),
         )
         for filename, source in AGENT_SOURCES.items():
-            for sentence, diagnostic in cases:
-                with self.subTest(role=Path(filename).stem, mutation=sentence):
+            for case_name, sentence, diagnostic in cases:
+                with self.subTest(role=Path(filename).stem, mutation=case_name):
                     candidate = inject_after_heading(source, "ALLOWED ACTIONS AND TOOLS", sentence)
                     self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
+
+    def test_confirmed_adversarial_global_contradictions_are_rejected(self) -> None:
+        cases = (
+            (
+                "architect.toml",
+                "This role may run destructive commands.",
+                "contradictory destructive-command/operation permission is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "This role may expose secrets.",
+                "contradictory secret-disclosure permission is forbidden",
+            ),
+            (
+                "security_reviewer.toml",
+                "This role may contact external systems.",
+                "contradictory external-system contact permission is forbidden",
+            ),
+            (
+                "architect.toml",
+                "This role may create an implicit pull request.",
+                "contradictory implicit commit/push/PR authorization is forbidden",
+            ),
+            (
+                "implementer.toml",
+                "This role may claim the parent task is complete.",
+                "contradictory whole-parent completion authorization is forbidden",
+            ),
+            (
+                "security_reviewer.toml",
+                "This TOML proves observed runtime behavior.",
+                "contradictory configured runtime-effectiveness claim is forbidden",
+            ),
+        )
+        for filename, sentence, diagnostic in cases:
+            with self.subTest(role=Path(filename).stem, mutation=sentence):
+                candidate = inject_after_heading(
+                    AGENT_SOURCES[filename],
+                    "ALLOWED ACTIONS AND TOOLS",
+                    sentence,
+                )
+                self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
 
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
