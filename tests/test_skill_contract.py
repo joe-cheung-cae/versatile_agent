@@ -462,8 +462,11 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out whereas previous approval carries forward.",
             "App tasks are not opt-out but default to authorization from previous requests.",
             "App tasks are not opt-out but creation can use earlier approval.",
+            "App tasks require explicit current-request authorization, but enable creation without authorization.",
             "No content failure may authorize Terra fallback, yet tool errors qualify as a reason to attempt Terra.",
+            "Content failures do not authorize Terra fallback, but enable a Terra attempt.",
             "This Skill does not grant permissions, or it confers permission.",
+            "This Skill does not change the parent model, but enables permission bypass.",
             "App tasks are not opt-out plus previous approval carries forward.",
             "No content failure may authorize Terra fallback, tool errors qualify as a reason to attempt Terra.",
             "No content failure may authorize Terra fallback plus tool errors qualify as a reason to attempt Terra.",
@@ -476,6 +479,8 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out. Such tasks are created by default.",
             "App tasks are not opt-out. They require no current-request authorization.",
             "App tasks are not opt-out. They accept prior request authorization.",
+            "App tasks accept prior request authorization.",
+            "App tasks may accept implicit consent.",
             "Content failures do not authorize Terra fallback, but tool failures do.",
             "Content failures do not authorize Terra fallback. Such outcomes are sufficient reasons for Terra.",
             "Content failures do not authorize Terra fallback. Such outcomes trigger Terra.",
@@ -506,6 +511,8 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out. Such tasks are documented in the authorization appendix.",
             "App tasks are not opt-out. They are documented in the authorization appendix.",
             "App tasks are not opt-out.\n\nSuch tasks are created by default.",
+            "App tasks do not accept prior request authorization.",
+            "App tasks should not accept implicit consent.",
         )
         for addition in accepted:
             with self.subTest(addition=addition):
@@ -625,7 +632,54 @@ class SkillContractTests(unittest.TestCase):
                 [],
             )
 
+        consecutive_continuation = (
+            "ordinary paragraph\n"
+            "    harmless continuation\n"
+            "    App tasks may be created by default.\n"
+            "    [Nested](model-routing.md)\n"
+        )
+        continuation_lines, continuation_diagnostics = (
+            VALIDATOR._container_normalized_lines_with_diagnostics(
+                consecutive_continuation
+            )
+        )
+        self.assertEqual(continuation_diagnostics, [])
+        self.assertTrue(
+            all(
+                getattr(line, "paragraph_continuation", False)
+                for line in continuation_lines[1:]
+            )
+        )
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(consecutive_continuation),
+            ["model-routing.md"],
+        )
+        continuation_map = dict(self.references)
+        continuation_map["workflow.md"] += consecutive_continuation
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(
+                    self.skill, continuation_map, SKILL_PATH
+                ),
+                [],
+            )
+        self.assertTrue(
+            VALIDATOR.semantic_contract_violations(
+                self.skill + "\n" + consecutive_continuation,
+                self.references,
+                self.ui,
+            )
+        )
+
         packet = self.references["task-contract.md"]
+        continuation_heading = (
+            packet
+            + "\nordinary paragraph\n"
+            + "    harmless continuation\n"
+            + "    ## Extra\n"
+        )
+        self.assertEqual(VALIDATOR.task_contract_violations(continuation_heading), [])
+
         lazy_heading = packet + "\n- item\nlazy continuation line\n    ## Extra\n"
         self.assertTrue(VALIDATOR.task_contract_violations(lazy_heading))
 

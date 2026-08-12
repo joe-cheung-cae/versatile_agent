@@ -107,7 +107,8 @@ SENSITIVE_PREDICATE_START_RE = re.compile(
     r"establish|establishes|confirm|confirms|guarantee|guarantees|"
     r"use|uses|attempt|attempts|carry|carries|forward|inherit|inherits|"
     r"confer|confers|qualify|qualifies|reason|reasons|perform|performs|"
-    r"bypass|bypasses|fallback|falls?|default|defaults|creation|creations)\b"
+    r"bypass|bypasses|fallback|falls?|default|defaults|creation|creations|"
+    r"enable|enables)\b"
 )
 SENSITIVE_SUBJECT_START_RE = re.compile(
     r"^(?:they|it|this\s+skill|app(?:\s+user-visible)?\s+tasks?|"
@@ -239,6 +240,8 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         (
             re.compile(r"\b(?:prior|previous|earlier|past)\s+authori[sz]ation\s+is\s+not\s+(?:acceptable|accepted|sufficient|enough)\b"),
             re.compile(r"\b(?:implicit|implied)\s+consent\s+is\s+not\s+(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+accept\b[^.!?;:]{0,50}\b(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+accept\b[^.!?;:]{0,50}\b(?:implicit|implied)\s+consent\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b\s+(?:cannot|can't|may\s+not|must\s+not|should\s+not)\s+rely\s+on\s+(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b"),
             re.compile(r"\bcurrent[-\s]+(?:user[-\s]+)?request\s+authori[sz]ation\s+is\s+not\s+(?:optional|unnecessary)\b"),
         ),
@@ -391,6 +394,15 @@ APP_UNSAFE_ELLIPSIS_RE = re.compile(
     r"(?:current[-\s]+request\s+)?authori[sz]\w*\b|"
     r"\baccept\w*\s+(?:the\s+)?(?:prior|previous|earlier|past)\s+"
     r"(?:user\s+)?request\s+authori[sz]\w*\b"
+)
+APP_LEGAL_ACCEPT_NEGATION_RE = re.compile(
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b"
+    r"(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+"
+    r"accept\b[^.!?;:]{0,50}\b(?:prior|previous|earlier|past)\s+"
+    r"(?:request\s+)?authori[sz]ation\b|"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,40}\b"
+    r"(?:do\s+not|don't|never|cannot|can't|may\s+not|must\s+not|should\s+not)\s+"
+    r"accept\b[^.!?;:]{0,50}\b(?:implicit|implied)\s+consent\b"
 )
 
 
@@ -592,6 +604,11 @@ def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) 
     local_fragments = re.split(r"\b(?:and|nor|but|however|although|while|whereas)\b", fragment)
     if any(DOUBLE_NEGATION_RE.search(local) is not None for local in local_fragments):
         return False
+    if (
+        policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
+        and APP_LEGAL_ACCEPT_NEGATION_RE.search(fragment) is not None
+    ):
+        return True
     if (
         policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
         and APP_UNSAFE_ELLIPSIS_RE.search(fragment) is not None
@@ -1082,8 +1099,16 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 # code.  If the continuation follows a blank, the boundary
                 # is ambiguous but still remains fail-closed via the shared
                 # diagnostic path when a nested construct is encountered.
-                lazy_continuation_active = True
-                list_blank_pending = False
+                if list_blank_pending:
+                    # An unindented line after a blank starts a new root
+                    # paragraph in this bounded dialect.  A directly
+                    # indented line was handled above as list content.
+                    list_stack = []
+                    lazy_continuation_active = False
+                    list_blank_pending = False
+                else:
+                    lazy_continuation_active = True
+                    list_blank_pending = False
             else:
                 list_stack = []
                 list_blank_pending = False
@@ -1103,13 +1128,14 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                         )
                     )
                     root_indented_code_active = False
+                    paragraph_active = True
                 else:
                     # A blank-separated root indentation is a genuine code
                     # block.  The empty rendered line is shared by scanner,
                     # task headings, and both semantic validation passes.
                     normalized.append("")
                     root_indented_code_active = True
-                paragraph_active = False
+                    paragraph_active = False
                 list_blank_pending = False
                 continue
         normalized.append(line)
