@@ -872,6 +872,83 @@ class RoutingStateTests(unittest.TestCase):
         self.assertEqual(json.loads(unicode_pipe.stdout)["state"], MODULE.STATE_FALLBACK_PENDING)
         self.assertNotIn(b"Traceback", unicode_pipe.stderr)
 
+    def test_cli_rejects_duplicate_json_members_at_all_depths(self) -> None:
+        rejection_bytes = (FIXTURE_ROOT / "luna-routing-rejection.json").read_bytes()
+
+        def assert_duplicate(
+            payload: bytes,
+            *,
+            use_stdin: bool,
+            text_input: bool,
+        ) -> None:
+            if use_stdin:
+                command = [sys.executable, str(HELPER), "decide", "-"]
+                input_value: bytes | str = payload.decode("utf-8") if text_input else payload
+                completed = subprocess.run(
+                    command,
+                    input=input_value,
+                    text=text_input,
+                    capture_output=True,
+                    check=False,
+                )
+            else:
+                with tempfile.TemporaryDirectory() as temporary:
+                    path = Path(temporary) / "duplicate.json"
+                    path.write_bytes(payload)
+                    completed = subprocess.run(
+                        [sys.executable, str(HELPER), "decide", str(path)],
+                        text=text_input,
+                        capture_output=True,
+                        check=False,
+                    )
+            empty = "" if text_input else b""
+            marker = "duplicate JSON member" if text_input else b"duplicate JSON member"
+            traceback = "Traceback" if text_input else b"Traceback"
+            self.assertEqual(completed.returncode, 2)
+            self.assertEqual(completed.stdout, empty)
+            self.assertIn(marker, completed.stderr)
+            self.assertNotIn(traceback, completed.stderr)
+
+        duplicate_failure = rejection_bytes.replace(
+            b'      "routing_failure": "requested_model_unavailable",\n',
+            b'      "routing_failure": "requested_model_unavailable",\n'
+            b'      "routing_failure": "native_spawn_rejected",\n',
+            1,
+        )
+        assert_duplicate(duplicate_failure, use_stdin=True, text_input=False)
+
+        duplicate_kind = rejection_bytes.replace(
+            b'        "kind": "requested_model_unavailable",\n',
+            b'        "kind": "requested_model_unavailable",\n'
+            b'        "kind": "native_spawn_rejected",\n',
+            1,
+        )
+        assert_duplicate(duplicate_kind, use_stdin=True, text_input=True)
+
+        duplicate_model_support = rejection_bytes.replace(
+            b'        "exposed_agent_types": ["docs_researcher_luna"],\n'
+            b'        "interface_kind": "native_spawn_attempt",\n'
+            b'        "model_support": [],\n',
+            b'        "exposed_agent_types": ["docs_researcher_luna"],\n'
+            b'        "interface_kind": "native_spawn_attempt",\n'
+            b'        "model_support": "unknown",\n'
+            b'        "model_support": [],\n',
+            1,
+        )
+        assert_duplicate(duplicate_model_support, use_stdin=False, text_input=False)
+
+        duplicate_nested = rejection_bytes.replace(
+            b'          "scope": "single-runtime"\n'
+            b'        },\n'
+            b'        "exposed_agent_types": ["docs_researcher_luna"],',
+            b'          "scope": "single-runtime",\n'
+            b'          "scope": "single-runtime"\n'
+            b'        },\n'
+            b'        "exposed_agent_types": ["docs_researcher_luna"],',
+            1,
+        )
+        assert_duplicate(duplicate_nested, use_stdin=True, text_input=False)
+
 
 if __name__ == "__main__":
     raise SystemExit(unittest.main())

@@ -171,6 +171,24 @@ class RouteResearchError(ValueError):
     """Raised when the route document or event stream is malformed."""
 
 
+def _json_member_label(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=True)
+    except (TypeError, ValueError):
+        return repr(value)
+
+
+def _reject_duplicate_json_members(pairs: list[tuple[Any, Any]]) -> dict[str, Any]:
+    """Build one JSON object while rejecting duplicate member names."""
+
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _error("document", f"duplicate JSON member name: {_json_member_label(key)}")
+        result[key] = value
+    return result
+
+
 def _error(location: str, message: str) -> RouteResearchError:
     return RouteResearchError(f"{location}: {message}")
 
@@ -1113,7 +1131,7 @@ def load_document(path: str | Path) -> dict[str, Any]:
     except UnicodeError as exc:
         raise _error("document", f"invalid UTF-8 input: {exc}") from exc
     try:
-        document = json.loads(source)
+        document = json.loads(source, object_pairs_hook=_reject_duplicate_json_members)
     except json.JSONDecodeError as exc:
         raise _error("document", f"invalid JSON: {exc}") from exc
     return validate_document(document)
