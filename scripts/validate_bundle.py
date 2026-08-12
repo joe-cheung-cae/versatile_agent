@@ -337,11 +337,18 @@ ROLE_CONTRACT_ANCHORS = {
             "missing evidence or ambiguity could change a public API, security boundary, compatibility promise, migration cost, or ownership assignment",
         ),
         "schema_fields": (
+            "ROLE",
+            "SUCCESS",
+            "SCOPE",
             "INTERFACES",
             "COMPATIBILITY",
             "ALTERNATIVES",
             "MIGRATION_ORDER",
             "VALIDATION_PLAN",
+            "RISKS",
+            "EVIDENCE",
+            "OPEN_QUESTIONS",
+            "SANDBOX",
         ),
     },
     "code_mapper": {
@@ -352,6 +359,9 @@ ROLE_CONTRACT_ANCHORS = {
             "requested call path cannot be established from repository evidence",
         ),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "ENTRY_POINTS",
             "FILES",
             "SYMBOLS",
             "CALL_FLOW",
@@ -359,6 +369,9 @@ ROLE_CONTRACT_ANCHORS = {
             "TESTS",
             "RISKS",
             "CONFIDENCE",
+            "UNKNOWN_OR_STOP",
+            "EVIDENCE",
+            "SANDBOX",
         ),
     },
     "docs_researcher_luna": {
@@ -367,6 +380,8 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("the requested native route is unobservable",),
         "schema_fields": (
+            "ROLE",
+            "QUESTION",
             "CLAIMS",
             "SOURCES",
             "VERSION_DATE",
@@ -375,11 +390,13 @@ ROLE_CONTRACT_ANCHORS = {
             "CONTRADICTIONS",
             "UNKNOWNS",
             "IMPLICATION",
+            "EVIDENCE",
             "REPORT_SCOPE",
             "STATUS_FAILURE_MATRIX",
             "STATUS",
             "FAILURE_CLASS",
             "ROUTE_AUTHORITY",
+            "SANDBOX",
         ),
     },
     "docs_researcher_terra": {
@@ -388,6 +405,8 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("the requested native route is unobservable",),
         "schema_fields": (
+            "ROLE",
+            "QUESTION",
             "CLAIMS",
             "SOURCES",
             "VERSION_DATE",
@@ -396,17 +415,21 @@ ROLE_CONTRACT_ANCHORS = {
             "CONTRADICTIONS",
             "UNKNOWNS",
             "IMPLICATION",
+            "EVIDENCE",
             "REPORT_SCOPE",
             "STATUS_FAILURE_MATRIX",
             "STATUS",
             "FAILURE_CLASS",
             "ROUTE_AUTHORITY",
+            "SANDBOX",
         ),
     },
     "gpu_reviewer": {
         "evidence": ("correctness evidence separately from performance evidence",),
         "stop": ("representative hardware context or profiler/benchmark evidence is missing or nonrepresentative",),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
             "CORRECTNESS_FINDINGS",
             "PERFORMANCE_FINDINGS",
             "SCALABILITY",
@@ -414,6 +437,8 @@ ROLE_CONTRACT_ANCHORS = {
             "PROFILER_EVIDENCE",
             "MEASUREMENT_GAPS",
             "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
         ),
     },
     "implementer": {
@@ -422,7 +447,10 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("missing ownership",),
         "schema_fields": (
+            "ROLE",
+            "OBJECTIVE",
             "OWNED_PATHS",
+            "CHANGES",
             "VERIFICATION",
             "CONCURRENT_EDIT_HANDLING",
             "ASSUMPTIONS",
@@ -435,6 +463,8 @@ ROLE_CONTRACT_ANCHORS = {
         "evidence": ("convergence tables, conservation residuals, and repeated-run results",),
         "stop": ("initial/boundary conditions or the baseline are absent",),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
             "CONVERGENCE",
             "CONSERVATION",
             "STABILITY",
@@ -443,6 +473,8 @@ ROLE_CONTRACT_ANCHORS = {
             "FINDINGS",
             "MEASUREMENT_GAPS",
             "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
         ),
     },
     "parallelism_reviewer": {
@@ -451,6 +483,8 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("static inspection cannot establish safety",),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
             "OWNERSHIP_MODEL",
             "HAPPENS_BEFORE",
             "COLLECTIVES",
@@ -459,6 +493,8 @@ ROLE_CONTRACT_ANCHORS = {
             "FINDINGS",
             "MEASUREMENT_GAPS",
             "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
         ),
     },
     "performance_profiler": {
@@ -467,6 +503,8 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("baseline or build mode differs",),
         "schema_fields": (
+            "ROLE",
+            "QUESTION",
             "BASELINE",
             "CANDIDATE",
             "METRICS",
@@ -476,6 +514,7 @@ ROLE_CONTRACT_ANCHORS = {
             "IMPACT",
             "GAPS",
             "STATUS",
+            "EVIDENCE",
         ),
     },
     "reviewer": {
@@ -484,11 +523,16 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("diff, changed-path ownership, or decisive verification evidence is missing",),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
             "FINDINGS",
+            "INVALID_OR_OUT_OF_SCOPE",
             "VERIFICATION",
             "MISSING_EVIDENCE",
             "VERDICT",
             "VERDICT_BASIS",
+            "EVIDENCE",
+            "SANDBOX",
         ),
         "exact_schema_lines": ("VERDICT: SHIP | FIX_FIRST | RETHINK",),
     },
@@ -496,6 +540,8 @@ ROLE_CONTRACT_ANCHORS = {
         "evidence": ("validation sites, authorization checks, sensitive sinks, attacker prerequisites",),
         "stop": ("Stop before destructive or harmful external exploitation",),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
             "SOURCE_TO_SINK",
             "ATTACKER_PREREQUISITES",
             "AUTHORIZATION_BOUNDARY",
@@ -503,12 +549,15 @@ ROLE_CONTRACT_ANCHORS = {
             "SAFE_VERIFICATION",
             "MISSING_EVIDENCE",
             "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
         ),
     },
     "test_validator": {
         "evidence": ("mapped path and false-positive analysis for every material requirement",),
         "stop": ("requirements, actual test code, decisive results, or baseline behavior are unavailable",),
         "schema_fields": (
+            "ROLE",
             "REQUIREMENT_TO_TEST",
             "FALSE_POSITIVES",
             "UNCOVERED_PATHS",
@@ -516,6 +565,8 @@ ROLE_CONTRACT_ANCHORS = {
             "BLOCKING_GAPS",
             "OPTIONAL_IMPROVEMENTS",
             "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
         ),
     },
     "tester": {
@@ -524,6 +575,8 @@ ROLE_CONTRACT_ANCHORS = {
         ),
         "stop": ("a command would mutate unowned paths",),
         "schema_fields": (
+            "ROLE",
+            "SCOPE",
             "COMMANDS",
             "RESULTS",
             "ARTIFACTS",
@@ -532,6 +585,7 @@ ROLE_CONTRACT_ANCHORS = {
             "REGRESSION_RISK",
             "NEXT_ACTION",
             "STATUS",
+            "EVIDENCE",
         ),
     },
 }
@@ -726,7 +780,7 @@ REGISTERED_DIRECT_CLAUSE_PREFIXES = (
     ("this", "task"),
     ("the", "task"),
 )
-REGISTERED_NEUTRAL_COLON_PREFIXES = (
+REGISTERED_NEUTRAL_LABEL_PREFIXES = (
     ("allowed",),
     ("allowed", "action"),
     ("allowed", "actions"),
@@ -738,40 +792,108 @@ REGISTERED_NEUTRAL_COLON_PREFIXES = (
     ("policy",),
     ("contract",),
 )
+REGISTERED_NON_DIRECT_CONTEXT_PREFIXES = (
+    ("never", "state"),
+    ("do", "not", "say"),
+    ("never", "authorize"),
+    ("do", "not", "authorize"),
+    ("never", "claim"),
+    ("do", "not", "claim"),
+    ("must", "not", "say"),
+    ("must", "not", "authorize"),
+    ("quoted",),
+    ("quote",),
+    ("example",),
+)
+REGISTERED_LIST_MARKER_RE = re.compile(r"^\s*(?:[-*+]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)")
+
+
+def _strip_registered_list_marker(line: str) -> str:
+    return REGISTERED_LIST_MARKER_RE.sub("", line, count=1)
+
+
+def _registered_tokens(text: str) -> tuple[str, ...]:
+    return tuple(_normalize_registered_text(_strip_registered_list_marker(text)).split())
+
+
+def _registered_neutral_label_remainder(text: str) -> tuple[str, ...] | None:
+    stripped = _strip_registered_list_marker(text)
+    for match in re.finditer(r"[:：—–]", stripped):
+        prefix = tuple(_normalize_registered_text(stripped[: match.start()]).split())
+        if prefix not in REGISTERED_NEUTRAL_LABEL_PREFIXES:
+            continue
+        remainder = _registered_tokens(stripped[match.end() :])
+        if remainder:
+            return remainder
+    return None
+
+
+def _registered_context_before_line(lines: list[str], line_index: int) -> bool:
+    previous = line_index - 1
+    while previous >= 0 and not lines[previous].strip():
+        previous -= 1
+    if previous < 0:
+        return False
+    previous_tokens = _registered_tokens(lines[previous])
+    return any(
+        previous_tokens[: len(prefix)] == prefix
+        for prefix in REGISTERED_NON_DIRECT_CONTEXT_PREFIXES
+    )
 
 
 def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
-    """Return bounded clauses while preserving wrapping and colon context."""
+    """Return bounded clauses while preserving physical and semantic context."""
     clauses: list[tuple[str, ...]] = []
-    wrapped_text = re.sub(r"[\r\n]+", " ", text)
-    for raw_clause in re.split(r"[.!?;]+", wrapped_text):
-        normalized = _normalize_registered_text(raw_clause)
-        if normalized:
-            clauses.append(tuple(normalized.split()))
-        colon_parts = raw_clause.split(":")
-        for boundary in range(1, len(colon_parts)):
-            context = tuple(
-                _normalize_registered_text(":".join(colon_parts[:boundary])).split()
-            )
-            if context not in REGISTERED_NEUTRAL_COLON_PREFIXES:
+    lines = text.splitlines()
+    paragraphs: list[list[tuple[int, str]]] = []
+    paragraph: list[tuple[int, str]] = []
+    for line_index, line in enumerate(lines):
+        if line.strip():
+            paragraph.append((line_index, line))
+        elif paragraph:
+            paragraphs.append(paragraph)
+            paragraph = []
+    if paragraph:
+        paragraphs.append(paragraph)
+
+    for paragraph in paragraphs:
+        blocks: list[list[tuple[int, str]]] = []
+        block: list[tuple[int, str]] = []
+        for line_index, line in paragraph:
+            if REGISTERED_LIST_MARKER_RE.match(line):
+                if block:
+                    blocks.append(block)
+                block = [(line_index, _strip_registered_list_marker(line))]
+            else:
+                block.append((line_index, line))
+        if block:
+            blocks.append(block)
+
+        for block in blocks:
+            if _registered_context_before_line(lines, block[0][0]):
                 continue
-            direct_clause = _normalize_registered_text(":".join(colon_parts[boundary:]))
-            if direct_clause:
-                clauses.append(tuple(direct_clause.split()))
+            wrapped_text = " ".join(line.strip() for _, line in block)
+            for raw_clause in re.split(r"[.!?]+", wrapped_text):
+                normalized = _normalize_registered_text(raw_clause)
+                if normalized:
+                    clauses.append(tuple(normalized.split()))
+                neutral_remainder = _registered_neutral_label_remainder(raw_clause)
+                if neutral_remainder is not None:
+                    clauses.append(neutral_remainder)
+
+        for line_index, line in paragraph:
+            if _registered_context_before_line(lines, line_index):
+                continue
+            neutral_remainder = _registered_neutral_label_remainder(line)
+            clauses.append(neutral_remainder if neutral_remainder is not None else _registered_tokens(line))
     return tuple(clauses)
 
 
-def _registered_direct_clause_prefixes(text: str) -> frozenset[tuple[str, ...]]:
-    """Build bounded direct-clause prefixes without classifying surrounding prose."""
-    candidates: set[tuple[str, ...]] = set()
-    for clause in _registered_clauses(text):
-        for prefix in REGISTERED_DIRECT_CLAUSE_PREFIXES:
-            if clause[: len(prefix)] != prefix:
-                continue
-            start = len(prefix)
-            for end in range(start + 1, len(clause) + 1):
-                candidates.add(clause[start:end])
-    return frozenset(candidates)
+def _registered_literal_matches(clause: tuple[str, ...], literal: tuple[str, ...]) -> bool:
+    return any(
+        clause[: len(prefix) + len(literal)] == prefix + literal
+        for prefix in REGISTERED_DIRECT_CLAUSE_PREFIXES
+    )
 
 
 def _reject_registered_literals(
@@ -781,10 +903,10 @@ def _reject_registered_literals(
     literals: tuple[str, ...],
     diagnostic: str,
 ) -> None:
-    direct_clause_prefixes = _registered_direct_clause_prefixes(text)
+    clauses = _registered_clauses(text)
     for literal in literals:
         normalized_literal = tuple(_normalize_registered_text(literal).split())
-        if normalized_literal in direct_clause_prefixes:
+        if any(_registered_literal_matches(clause, normalized_literal) for clause in clauses):
             errors.append(f"{label}: {diagnostic}: {literal}")
 
 
@@ -1053,11 +1175,14 @@ def _validate_role_specific_semantics(
         "registered role-specific stop anchor missing",
     )
     return_schema = sections.get("RETURN SCHEMA", "")
-    schema_fields = {
-        field
-        for field in re.findall(r"(?m)^[ \t]*([A-Z][A-Z0-9_]*)\s*:", return_schema)
-    }
-    for field in registered["schema_fields"]:
+    schema_fields = tuple(re.findall(r"(?m)^[ \t]*([A-Z][A-Z0-9_]*)\s*:", return_schema))
+    expected_schema_fields = tuple(registered["schema_fields"])
+    if schema_fields != expected_schema_fields:
+        errors.append(
+            f"{label}: registered structured handoff schema fields must exactly match "
+            f"the registered order: expected {expected_schema_fields!r}; observed {schema_fields!r}"
+        )
+    for field in expected_schema_fields:
         if field not in schema_fields:
             errors.append(f"{label}: registered structured handoff field missing: {field}")
     for exact_line in registered.get("exact_schema_lines", ()):

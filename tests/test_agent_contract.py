@@ -7,6 +7,7 @@ import importlib.util
 import re
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -93,6 +94,55 @@ def remove_schema_field(source: str, field: str) -> str:
     return candidate
 
 
+def schema_fields(source: str) -> tuple[str, ...]:
+    body = source.split("# RETURN SCHEMA\n", 1)[1]
+    return tuple(re.findall(r"(?m)^[ \t]*([A-Z][A-Z0-9_]*)\s*:", body))
+
+
+def duplicate_schema_field(source: str, field: str) -> str:
+    pattern = rf"(?m)^[ \t]*{re.escape(field)}\s*:.*(?:\n|$)"
+    match = re.search(pattern, source)
+    if match is None:
+        raise AssertionError(f"schema duplicate anchor is absent: {field!r}")
+    return source[: match.end()] + match.group(0) + source[match.end() :]
+
+
+def swap_schema_fields(source: str, first: str, second: str) -> str:
+    lines = source.splitlines(keepends=True)
+    first_index = next(
+        (index for index, line in enumerate(lines) if re.match(rf"^[ \t]*{re.escape(first)}\s*:", line)),
+        None,
+    )
+    second_index = next(
+        (index for index, line in enumerate(lines) if re.match(rf"^[ \t]*{re.escape(second)}\s*:", line)),
+        None,
+    )
+    if first_index is None or second_index is None:
+        raise AssertionError(f"schema reorder anchors are absent: {first!r}, {second!r}")
+    lines[first_index], lines[second_index] = lines[second_index], lines[first_index]
+    return "".join(lines)
+
+
+def rename_schema_field(source: str, field: str, replacement: str) -> str:
+    candidate, count = re.subn(
+        rf"(?m)^([ \t]*){re.escape(field)}(\s*:)",
+        rf"\g<1>{replacement}\g<2>",
+        source,
+        count=1,
+    )
+    if count != 1:
+        raise AssertionError(f"schema rename anchor is absent: {field!r}")
+    return candidate
+
+
+def add_extra_schema_field(source: str, field: str) -> str:
+    pattern = rf"(?m)^([ \t]*){re.escape(field)}\s*:.*(?:\n|$)"
+    match = re.search(pattern, source)
+    if match is None:
+        raise AssertionError(f"schema extra-field anchor is absent: {field!r}")
+    return source[: match.end()] + "EXTRA_SCHEMA_FIELD: injected\n" + source[match.end() :]
+
+
 class AgentContractTests(unittest.TestCase):
     def materialize(
         self,
@@ -114,7 +164,7 @@ class AgentContractTests(unittest.TestCase):
             return VALIDATOR.agent_directory_violations(common)
 
     def errors_for(self, filename: str, source: str) -> list[str]:
-        return self.materialize({filename: source})
+        return VALIDATOR.agent_contract_violations(tomllib.loads(source), filename)
 
     def assert_diagnostic(self, errors: list[str], fragment: str) -> None:
         self.assertTrue(
@@ -184,7 +234,7 @@ class AgentContractTests(unittest.TestCase):
         )
 
         duplicate = AGENT_SOURCES["architect.toml"].replace('name = "architect"', 'name = "code_mapper"', 1)
-        errors = self.errors_for("architect.toml", duplicate)
+        errors = self.materialize({"architect.toml": duplicate})
         self.assert_diagnostic(errors, "filename stem")
         self.assert_diagnostic(errors, "duplicate configured agent name")
 
@@ -625,6 +675,48 @@ class AgentContractTests(unittest.TestCase):
                 )
                 self.assertEqual(self.errors_for("architect.toml", candidate), [], sentence)
 
+    def test_authentic_physical_boundaries_and_neutral_label_variants(self) -> None:
+        filename = "architect.toml"
+        source = AGENT_SOURCES[filename]
+        existing_line = "Use bounded repository search and file inspection, read-only Git status/diff/log, and\n"
+        direct_variants = (
+            "This role may expose secrets.\n",
+            "- This role may expose secrets.\n",
+            "\nThis role may expose secrets.\n",
+            "Inspect only\nThis role may expose secrets.\n",
+            "Allowed actions： This role may expose secrets.\n",
+            "Allowed actions — This role may expose secrets.\n",
+        )
+        for insertion in direct_variants:
+            with self.subTest(insertion=insertion):
+                candidate, count = source.replace(
+                    existing_line,
+                    existing_line + insertion,
+                    1,
+                ), source.count(existing_line)
+                self.assertEqual(count, 1)
+                self.assertNotEqual(candidate, source)
+                self.assert_diagnostic(
+                    self.errors_for(filename, candidate),
+                    "contradictory secret-disclosure permission is forbidden",
+                )
+
+        benign_variants = (
+            "Never state;\nThis role may expose secrets.\n",
+            "Do not say;\n- This role may expose secrets.\n",
+            "Never state：\nThis role may expose secrets.\n",
+        )
+        for insertion in benign_variants:
+            with self.subTest(insertion=insertion):
+                candidate, count = source.replace(
+                    existing_line,
+                    existing_line + insertion,
+                    1,
+                ), source.count(existing_line)
+                self.assertEqual(count, 1)
+                self.assertNotEqual(candidate, source)
+                self.assertEqual(self.errors_for(filename, candidate), [], insertion)
+
     def test_global_contradictions_are_checked_in_every_operative_section(self) -> None:
         filename = "architect.toml"
         source = AGENT_SOURCES[filename]
@@ -640,16 +732,47 @@ class AgentContractTests(unittest.TestCase):
                     "contradictory external-system mutation permission is forbidden",
                 )
 
-    def test_every_registered_role_schema_rejects_a_removed_field(self) -> None:
+    def test_registered_schema_registry_matches_every_accepted_base_sequence(self) -> None:
+        for name, registered in VALIDATOR.ROLE_CONTRACT_ANCHORS.items():
+            filename = f"{name}.toml"
+            self.assertEqual(
+                schema_fields(AGENT_SOURCES[filename]),
+                tuple(registered["schema_fields"]),
+                filename,
+            )
+
+    def test_every_registered_role_schema_rejects_every_removed_field(self) -> None:
         for name, registered in VALIDATOR.ROLE_CONTRACT_ANCHORS.items():
             filename = f"{name}.toml"
             for field in registered["schema_fields"]:
                 with self.subTest(role=name, field=field):
                     candidate = remove_schema_field(AGENT_SOURCES[filename], field)
+                    self.assertNotEqual(candidate, AGENT_SOURCES[filename])
                     self.assert_diagnostic(
                         self.errors_for(filename, candidate),
                         f"registered structured handoff field missing: {field}",
                     )
+
+    def test_every_registered_role_schema_rejects_duplicate_reordered_renamed_and_extra_fields(self) -> None:
+        diagnostic = "registered structured handoff schema fields must exactly match the registered order"
+        for name, registered in VALIDATOR.ROLE_CONTRACT_ANCHORS.items():
+            filename = f"{name}.toml"
+            fields = tuple(registered["schema_fields"])
+            first, second = fields[:2]
+            cases = (
+                ("duplicate", duplicate_schema_field(AGENT_SOURCES[filename], first), diagnostic),
+                ("reordered", swap_schema_fields(AGENT_SOURCES[filename], first, second), diagnostic),
+                (
+                    "renamed",
+                    rename_schema_field(AGENT_SOURCES[filename], second, "RENAMED_SCHEMA_FIELD"),
+                    diagnostic,
+                ),
+                ("extra", add_extra_schema_field(AGENT_SOURCES[filename], first), diagnostic),
+            )
+            for mutation, candidate, expected in cases:
+                with self.subTest(role=name, mutation=mutation):
+                    self.assertNotEqual(candidate, AGENT_SOURCES[filename])
+                    self.assert_diagnostic(self.errors_for(filename, candidate), expected)
 
     def test_reviewer_verdict_enum_cannot_be_widened(self) -> None:
         source = AGENT_SOURCES["reviewer.toml"]
@@ -714,6 +837,7 @@ class AgentContractTests(unittest.TestCase):
             for index, anchor in enumerate(VALIDATOR.RESEARCH_STATUS_FAILURE_ANCHORS):
                 with self.subTest(role=name, anchor=index):
                     candidate = mutate_whitespace_anchor(source, anchor)
+                    self.assertNotEqual(candidate, source)
                     self.assert_diagnostic(
                         self.errors_for(filename, candidate),
                         "researcher status/failure matrix anchor missing",
@@ -772,6 +896,7 @@ class AgentContractTests(unittest.TestCase):
             for mutation, anchor, replacement, diagnostic in cases:
                 with self.subTest(role=name, mutation=mutation):
                     candidate = mutate_whitespace_anchor(source, anchor, replacement)
+                    self.assertNotEqual(candidate, source)
                     self.assert_diagnostic(self.errors_for(filename, candidate), diagnostic)
 
     def test_researchers_reject_failure_authorized_fallback_and_route_switch_permissions(self) -> None:
