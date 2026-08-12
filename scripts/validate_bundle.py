@@ -1185,15 +1185,72 @@ def _registered_polarity_kind(tokens: tuple[str, ...]) -> str | None:
     return None
 
 
-def _registered_polarity_violations(filename: str, text: str) -> list[str]:
-    """Reject only the two registered affirmative protected predicates."""
-    errors: list[str] = []
-    # The controlled Markdown source scanner masks fences/comments/inline code,
-    # but intentionally leaves list items as independent physical clauses.
-    flags = _source_flags(text, mask_containers=False)
+def _registered_unescaped_backtick_runs(line: str) -> tuple[tuple[int, int, int], ...]:
+    """Return unescaped, contiguous backtick runs in one physical line."""
+    runs: list[tuple[int, int, int]] = []
+    index = 0
+    while index < len(line):
+        if line[index] != "`":
+            index += 1
+            continue
+        backslashes = 0
+        cursor = index - 1
+        while cursor >= 0 and line[cursor] == "\\":
+            backslashes += 1
+            cursor -= 1
+        if backslashes % 2:
+            index += 1
+            continue
+        end = index + 1
+        while end < len(line) and line[end] == "`":
+            end += 1
+        runs.append((index, end, end - index))
+        index = end
+    return tuple(runs)
+
+
+def _registered_polarity_inline_projection(line: str) -> str | None:
+    """Mask only closed same-run inline-code spans for polarity scanning.
+
+    This is deliberately smaller than CommonMark: adjacent unescaped runs are
+    paired in order and must have equal lengths.  An unmatched or mismatched
+    run leaves the whole physical line inactive, matching the existing source
+    flag behavior for unescaped backticks.
+    """
+    runs = _registered_unescaped_backtick_runs(line)
+    if not runs:
+        return line
+    if len(runs) % 2:
+        return None
+
+    projected = list(line)
+    for opening, closing in zip(runs[::2], runs[1::2]):
+        if opening[2] != closing[2]:
+            return None
+        for index in range(opening[0], closing[1]):
+            projected[index] = " "
+    return "".join(projected)
+
+
+def _registered_polarity_active_lines(text: str) -> tuple[tuple[int, str], ...]:
+    """Return active physical lines with bounded inline code removed."""
+    flags = _source_flags(text, mask_containers=False, mask_inline_code=False)
+    active_lines: list[tuple[int, str]] = []
     for index, line in enumerate(_source_lines(text)):
         if index >= len(flags) or not flags[index]:
             continue
+        projected = _registered_polarity_inline_projection(line)
+        if projected is not None:
+            active_lines.append((index, projected))
+    return tuple(active_lines)
+
+
+def _registered_polarity_violations(filename: str, text: str) -> list[str]:
+    """Reject only the two registered affirmative protected predicates."""
+    errors: list[str] = []
+    # Fences/comments remain inactive, while closed inline-code spans are
+    # projected away and list items remain independent physical clauses.
+    for index, line in _registered_polarity_active_lines(text):
         for tokens, protected in _registered_polarity_candidates(line):
             if protected:
                 continue
@@ -1210,7 +1267,7 @@ def _reject_registered_polarity(
 ) -> None:
     section_texts = (text,) if isinstance(text, str) else text
     for section_text in section_texts:
-        for line in section_text.splitlines():
+        for _, line in _registered_polarity_active_lines(section_text):
             for tokens, protected in _registered_polarity_candidates(line):
                 if protected:
                     continue

@@ -586,6 +586,126 @@ class SkillContractTests(unittest.TestCase):
             [],
         )
 
+    def test_polarity_inline_code_projection_is_bounded_and_shared(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        rejecting = (
+            (
+                "app-after-inline-code",
+                "App tasks could be created without authorization. `benign`",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "app-before-inline-code",
+                "`benign` App tasks could be created without authorization.",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "app-between-inline-code",
+                "App tasks could be `benign` created without authorization.",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "failure-after-inline-code",
+                "Content failures could authorize Terra fallback. `benign`",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "failure-before-inline-code",
+                "`benign` Content failures could authorize Terra fallback.",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "failure-between-inline-code",
+                "Content failures could `benign` authorize Terra fallback.",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-multiple-inline-spans",
+                "App tasks could be created without authorization. `one` and `two`",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "app-escaped-backticks-are-active",
+                r"App tasks could be created without authorization. \`benign\`",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "failure-escaped-backticks-are-active",
+                r"Content failures could authorize Terra fallback. \`benign\`",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in rejecting:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                agent_sentence = sentence.replace("\\", "\\\\")
+                errors = self.agent_errors(filename, agent_sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+        accepted = (
+            (
+                "app-inline-code-only",
+                "`App tasks could be created without authorization.`",
+                "architect.toml",
+            ),
+            (
+                "failure-inline-code-only",
+                "`Content failures could authorize Terra fallback.`",
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-unsafe-inside-code-with-benign-prose",
+                "`App tasks could be created without authorization.` note",
+                "architect.toml",
+            ),
+            (
+                "failure-unsafe-inside-code-with-benign-prose",
+                "`Content failures could authorize Terra fallback.` note",
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-fully-fenced",
+                "```text\nApp tasks could be created without authorization.\n```",
+                "architect.toml",
+            ),
+            (
+                "failure-fully-fenced",
+                "~~~text\nContent failures could authorize Terra fallback.\n~~~",
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-unmatched-run-is-inactive",
+                "App tasks could be created without authorization. `unmatched",
+                "architect.toml",
+            ),
+            (
+                "failure-mismatched-runs-are-inactive",
+                "Content failures could authorize Terra fallback. `one ``two",
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, filename in accepted:
+            with self.subTest(path="Skill", control=name):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+            with self.subTest(path="agent", control=name):
+                self.assertEqual(self.agent_errors(filename, sentence), [])
+
     def test_polarity_keeps_hard_boundaries_and_negation_local(self) -> None:
         app_diagnostic = "App task creation without explicit authorization"
         failure_diagnostic = "failure authorization of Terra fallback"
