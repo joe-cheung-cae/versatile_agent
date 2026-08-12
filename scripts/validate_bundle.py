@@ -137,14 +137,17 @@ SENSITIVE_ELLIPSIS_WORD_RE = re.compile(
 SENSITIVE_ELLIPSIS_AUXILIARY_RE = re.compile(r"\b(?:do|does|did)\b")
 SENSITIVE_ELLIPSIS_PROTECTED_RE: dict[str, re.Pattern[str]] = {
     "App task authorization/opt-in policy is ambiguous or unsafe": re.compile(
-        r"\b(?:authori[sz]ed|creat\w*|default|suffic\w*|reason\w*|"
+        r"\b(?:authori[sz](?:e|ed|es|ing)?|accept\w*|require\w*|need\w*|creat\w*|"
+        r"default|current[-\s]+request|no|prior|previous|earlier|"
+        r"suffic\w*|reason\w*|"
         r"qualif\w*|allow\w*|permit\w*|grant\w*|carried?|carry|"
         r"forward|inherit\w*|confer\w*|rely|relies|implicit|implied|"
         r"opt[-\s]?(?:in|out))\b"
     ),
     "Failure-to-Terra/fallback policy is ambiguous or unsafe": re.compile(
-        r"\b(?:attempt\w*|authori[sz]\w*|suffic\w*|reason\w*|"
-        r"qualif\w*|allow\w*|permit\w*|permitted|allowed)\b"
+        r"\b(?:trigger\w*|terra|fallback|attempt\w*|authori[sz]\w*|"
+        r"suffic\w*|reason\w*|qualif\w*|allow\w*|permit\w*|"
+        r"permitted|allowed)\b"
     ),
     "Offline-to-runtime/native conformance policy is ambiguous or unsafe": re.compile(
         r"\b(?:proof|prove\w*|establish\w*|confirm\w*|guarantee\w*|"
@@ -156,8 +159,9 @@ SENSITIVE_ELLIPSIS_PROTECTED_RE: dict[str, re.Pattern[str]] = {
         r"confer\w*|bypass\w*)\b"
     ),
     "Probe/manifest/App evidence for effective route is ambiguous or unsafe": re.compile(
-        r"\b(?:prove\w*|establish\w*|confirm\w*|guarantee\w*|"
-        r"proven|established|confirmed|guaranteed)\b"
+        r"\b(?:demonstrat\w*|prove\w*|establish\w*|confirm\w*|"
+        r"guarantee\w*|proven|established|confirmed|guaranteed|"
+        r"effective[-\s]+(?:native[-\s]+)?route)\b"
     ),
 }
 
@@ -382,6 +386,12 @@ DOUBLE_NEGATION_RE = re.compile(
     r"switches|grant|grants|prove|proves|establish|establishes|confirm|confirms|"
     r"guarantee|guarantees|rely|relies|use|uses|attempt|attempts)\b"
 )
+APP_UNSAFE_ELLIPSIS_RE = re.compile(
+    r"\b(?:require\w*|need\w*)\s+(?:no\s+)?"
+    r"(?:current[-\s]+request\s+)?authori[sz]\w*\b|"
+    r"\baccept\w*\s+(?:the\s+)?(?:prior|previous|earlier|past)\s+"
+    r"(?:user\s+)?request\s+authori[sz]\w*\b"
+)
 
 
 class _SensitiveContractPolicy(NamedTuple):
@@ -502,19 +512,51 @@ def _contract_sensitive_fragments(
 
     fragments = [clause]
     fragments.extend(_inherited_sensitive_fragments(clause, previous_clause, policy))
-    for boundary in SENSITIVE_CONNECTOR_RE.finditer(clause):
-        right = clause[boundary.end() :].strip()
-        right = re.sub(
-            r"^(?:and|yet|or|plus|while|whereas|but|however|although)\b[\s,]*",
-            "",
-            right,
+
+    # Consume connector spans once and inspect only the adjacent segment.
+    # Keeping spans, subjects, actions, and negation matches avoids rescanning
+    # every growing prefix/suffix for long comma-and connector chains.
+    boundaries = list(SENSITIVE_CONNECTOR_RE.finditer(clause))
+    subjects = list(policy.subject.finditer(clause))
+    actions = list(policy.action.finditer(clause))
+    negations = list(GOVERNING_MODAL_NEGATION_RE.finditer(clause))
+    negated_claims = list(NEGATED_CLAIM_RE.finditer(clause))
+    subject_index = 0
+    action_index = 0
+    negation_index = 0
+    claim_index = 0
+    recent_subjects: list[re.Match[str]] = []
+    last_action: str | None = None
+    has_left_negation = False
+    has_left_negated_claim = False
+
+    for boundary_index, boundary in enumerate(boundaries):
+        boundary_start = boundary.start()
+        while subject_index < len(subjects) and subjects[subject_index].start() < boundary_start:
+            recent_subjects.append(subjects[subject_index])
+            recent_subjects = recent_subjects[-2:]
+            subject_index += 1
+        while action_index < len(actions) and actions[action_index].end() <= boundary_start:
+            last_action = actions[action_index].group(0)
+            action_index += 1
+        while negation_index < len(negations) and negations[negation_index].end() <= boundary_start:
+            has_left_negation = True
+            negation_index += 1
+        while claim_index < len(negated_claims) and negated_claims[claim_index].end() <= boundary_start:
+            has_left_negated_claim = True
+            claim_index += 1
+
+        right_start = boundary.end()
+        right_end = (
+            boundaries[boundary_index + 1].start()
+            if boundary_index + 1 < len(boundaries)
+            else len(clause)
         )
+        right = clause[right_start:right_end].strip()
         if not right:
             continue
         fragments.append(right)
-        left = clause[: boundary.start()]
-        subjects = list(policy.subject.finditer(left))
-        if not subjects or (
+        if not recent_subjects or (
             policy.action.search(right) is None
             and not _is_sensitive_ellipsis(right, policy)
         ):
@@ -528,20 +570,19 @@ def _contract_sensitive_fragments(
         connector = boundary.group(0).strip().casefold()
         if (
             connector in {"or", ","}
-            and GOVERNING_MODAL_NEGATION_RE.search(left) is not None
+            and has_left_negation
             and SENSITIVE_PREDICATE_START_RE.match(right) is not None
             and (
                 NEGATED_ELLIPTICAL_BASE_RE.match(right) is not None
-                or NEGATED_CLAIM_RE.search(left) is not None
+                or has_left_negated_claim
             )
         ):
-            for subject in subjects[-2:]:
+            for subject in recent_subjects:
                 fragments.append(f"{subject.group(0)} does not {right}")
             continue
-        action = _last_policy_action(left, policy)
-        for subject in subjects[-2:]:
-            if policy.action.search(right) is None and action is not None:
-                fragments.append(f"{subject.group(0)} {right} {action}")
+        for subject in recent_subjects:
+            if policy.action.search(right) is None and last_action is not None:
+                fragments.append(f"{subject.group(0)} {right} {last_action}")
             else:
                 fragments.append(f"{subject.group(0)} {right}")
     return fragments
@@ -551,32 +592,78 @@ def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) 
     local_fragments = re.split(r"\b(?:and|nor|but|however|although|while|whereas)\b", fragment)
     if any(DOUBLE_NEGATION_RE.search(local) is not None for local in local_fragments):
         return False
+    if (
+        policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
+        and APP_UNSAFE_ELLIPSIS_RE.search(fragment) is not None
+    ):
+        return False
     if SENSITIVE_NEGATION_RE.search(fragment) is not None:
         return True
     return any(pattern.search(fragment) is not None for pattern in policy.approved_positive)
 
 
-def _strip_inline_code_for_contract(text: str) -> str:
-    """Remove balanced inline-code spans before classifying contract prose."""
+def _mask_contract_rendered_text(text: str) -> str:
+    """Return one rendered-text view for all semantic contract checks.
 
+    Valid fenced code, inline code, and HTML comments are non-rendered for
+    this controlled dialect.  Delimiters are recognized only with even
+    backslash parity, so an escaped delimiter cannot hide visible prose.
+    """
+
+    lines, _ = _unfenced_lines(text)
+    rendered = "\n".join(lines)
+    escaped = _escaped_character_flags(rendered)
     output: list[str] = []
     index = 0
-    while index < len(text):
-        if text[index] != "`":
-            output.append(text[index])
-            index += 1
+    inline_code_length: int | None = None
+    comment_active = False
+
+    while index < len(rendered):
+        if comment_active:
+            close = rendered.find("-->", index)
+            if close < 0:
+                output.extend(" " for _ in rendered[index:])
+                break
+            output.extend(" " for _ in rendered[index : close + 3])
+            index = close + 3
+            comment_active = False
             continue
-        run_end = index + 1
-        while run_end < len(text) and text[run_end] == "`":
-            run_end += 1
-        run_length = run_end - index
-        close = text.find("`" * run_length, run_end)
-        if close < 0:
-            output.extend(" " for _ in text[index:])
-            break
-        output.extend(" " for _ in text[index : close + run_length])
-        index = close + run_length
+
+        if inline_code_length is not None:
+            delimiter = "`" * inline_code_length
+            if rendered.startswith(delimiter, index) and not escaped[index]:
+                output.extend(" " for _ in delimiter)
+                index += inline_code_length
+                inline_code_length = None
+            else:
+                output.append(" ")
+                index += 1
+            continue
+
+        if rendered.startswith("<!--", index) and not escaped[index]:
+            output.extend(" " for _ in "<!--")
+            index += 4
+            comment_active = True
+            continue
+
+        if rendered[index] == "`" and not escaped[index]:
+            run_end = index + 1
+            while run_end < len(rendered) and rendered[run_end] == "`":
+                run_end += 1
+            inline_code_length = run_end - index
+            output.extend(" " for _ in rendered[index:run_end])
+            index = run_end
+            continue
+
+        output.append(rendered[index])
+        index += 1
     return "".join(output)
+
+
+def _strip_inline_code_for_contract(text: str) -> str:
+    """Compatibility wrapper for the shared rendered-text masking path."""
+
+    return _mask_contract_rendered_text(text)
 
 
 def sensitive_contract_violations(texts: tuple[str, ...]) -> list[str]:
@@ -584,8 +671,7 @@ def sensitive_contract_violations(texts: tuple[str, ...]) -> list[str]:
 
     violations: list[str] = []
     for text in texts:
-        lines, _ = _unfenced_lines(text)
-        rendered_text = _strip_inline_code_for_contract("\n".join(lines))
+        rendered_text = _mask_contract_rendered_text(text)
         paragraphs = re.split(r"\n[ \t]*\n", rendered_text)
         for paragraph in paragraphs:
             clauses = _contract_clauses(paragraph)
@@ -742,6 +828,12 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
             inline_code_length = None
             comment_active = False
             continue
+        if _is_indented_code_line(line) and pending is None:
+            # Inline-code/comment state inside an indented code block cannot
+            # leak into the following rendered paragraph.
+            inline_code_length = None
+            comment_active = False
+            continue
         masked, inline_code_length, comment_active = _mask_raw_html_ignored_line(
             line, inline_code_length, comment_active
         )
@@ -749,8 +841,6 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
             combined = pending + "\n" + masked
             add_all(_raw_html_diagnostics(combined))
             pending = _raw_html_pending_prefix(combined)
-            continue
-        if _is_indented_code_line(line):
             continue
         add_all(_raw_html_diagnostics(masked))
         pending = _raw_html_pending_prefix(masked)
@@ -806,8 +896,10 @@ def _is_indented_code_line(line: str) -> bool:
     return line.startswith("\t") or line.startswith("    ")
 
 
-LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|\d+[.)])[ \t]+(.*)$")
-LIST_ITEM_FULL_RE = re.compile(r"^( *)([-+*]|\d+[.)])([ \t]+)(.*)$")
+LIST_ITEM_RE = re.compile(r"^( {0,3})(?:[-+*]|[0-9]{1,9}[.)])[ \t]{1,4}(.*)$")
+LIST_ITEM_FULL_RE = re.compile(r"^( *)([-+*]|[0-9]{1,9}[.)])([ \t]{1,4})(.*)$")
+INVALID_LIST_SPACING_RE = re.compile(r"^ *(?:[-+*]|[0-9]{1,9}[.)])[ \t]{5,}")
+LONG_ORDERED_MARKER_RE = re.compile(r"^ *[0-9]{10,}[.)][ \t]+")
 MAX_CONTAINER_PREFIX_DEPTH = 16
 
 
@@ -863,15 +955,32 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
     # deterministic without assuming a four-space list width.
     list_stack: list[tuple[int, int]] = []
 
-    for raw_line in text.splitlines():
+    raw_lines = text.splitlines()
+    lazy_list_active = False
+    paragraph_active = False
+    for line_index, raw_line in enumerate(raw_lines):
         _, _, _, depth_exhausted = _peel_container_prefixes_details(raw_line)
         if depth_exhausted:
             diagnostics.append("container prefix depth exceeded in Markdown line")
 
         line, blockquote_count = _strip_blockquote_prefixes(raw_line)
+        if INVALID_LIST_SPACING_RE.match(line):
+            diagnostics.append("list marker has more than four spaces after its marker")
+            normalized.append("    " + line.lstrip())
+            list_stack = []
+            lazy_list_active = False
+            paragraph_active = False
+            continue
+        if LONG_ORDERED_MARKER_RE.match(line):
+            diagnostics.append("ordered list marker has more than nine digits")
+
         list_match = LIST_ITEM_FULL_RE.match(line)
         if list_match is not None and _accept_list_marker(
-            len(list_match.group(1)), list_stack, diagnostics
+            len(list_match.group(1)),
+            list_match.group(2),
+            list_stack,
+            diagnostics,
+            paragraph_active,
         ):
             marker_start = len(list_match.group(1))
             content_start = list_match.start(4)
@@ -886,10 +995,22 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
             if content_exhausted:
                 diagnostics.append("container prefix depth exceeded in Markdown line")
             normalized.append(content)
+            lazy_list_active = False
+            paragraph_active = False
             continue
 
         if not line.strip():
             normalized.append(line)
+            list_stack = []
+            lazy_list_active = False
+            paragraph_active = False
+            continue
+
+        if _is_block_boundary_line(line):
+            list_stack = []
+            lazy_list_active = False
+            normalized.append(line)
+            paragraph_active = False
             continue
 
         leading_spaces = len(line) - len(line.lstrip(" "))
@@ -912,20 +1033,56 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 )
             if candidate_index >= 0:
                 candidate = line[1:] if line.startswith("\t") else line[candidate_indent:]
+                if INVALID_LIST_SPACING_RE.match(candidate):
+                    diagnostics.append("list marker has more than four spaces after its marker")
+                    normalized.append("    " + candidate.lstrip())
+                    list_stack = list_stack[: candidate_index + 1]
+                    lazy_list_active = False
+                    paragraph_active = False
+                    continue
                 content, _, _, content_exhausted = _peel_container_prefixes_details(candidate)
                 if content_exhausted:
                     diagnostics.append("container prefix depth exceeded in Markdown line")
                 list_stack = list_stack[: candidate_index + 1]
                 normalized.append(content)
+                lazy_list_active = False
+                paragraph_active = False
                 continue
             if leading_spaces and blockquote_count == 0:
                 diagnostics.append("ambiguous list continuation indentation")
-            list_stack = []
+                list_stack = []
+                lazy_list_active = False
+            elif blockquote_count == 0:
+                next_line = (
+                    _strip_blockquote_prefixes(raw_lines[line_index + 1])[0]
+                    if line_index + 1 < len(raw_lines)
+                    else ""
+                )
+                next_leading = len(next_line) - len(next_line.lstrip(" "))
+                if next_line.startswith("\t") or next_leading >= list_stack[-1][1]:
+                    diagnostics.append("ambiguous lazy list continuation")
+                    lazy_list_active = True
+                elif not lazy_list_active:
+                    # Keep the list context for this lazy paragraph line.  A
+                    # later indented line is then classified as list content
+                    # instead of silently becoming top-level code.
+                    lazy_list_active = True
+            else:
+                list_stack = []
+                lazy_list_active = False
 
         # A blockquote is a rendered container even when it follows a list;
         # top-level four-space and tab-indented lines remain code.
         normalized.append(line)
+        paragraph_active = True
     return normalized, diagnostics
+
+
+def _is_block_boundary_line(line: str) -> bool:
+    return (
+        ATX_TASK_HEADING_RE.match(line) is not None
+        or _line_fence_marker(line) is not None
+    )
 
 
 def _strip_blockquote_prefixes(line: str) -> tuple[str, int]:
@@ -942,10 +1099,15 @@ def _strip_blockquote_prefixes(line: str) -> tuple[str, int]:
 
 def _accept_list_marker(
     marker_start: int,
+    marker: str,
     list_stack: list[tuple[int, int]],
     diagnostics: list[str],
+    paragraph_active: bool,
 ) -> bool:
     if not list_stack:
+        if marker[0].isdigit() and int(marker.rstrip(".)")) != 1 and paragraph_active:
+            diagnostics.append("ordered list marker other than one cannot interrupt a paragraph")
+            return False
         return marker_start <= 3
     parent_marker, parent_content = list_stack[-1]
     if marker_start > parent_marker and marker_start < parent_content:
@@ -1368,20 +1530,21 @@ def semantic_contract_violations(
 ) -> list[str]:
     """Return explicit contradiction labels for the frozen Skill contract."""
 
-    reference_text = (reference_map[name] for name in sorted(reference_map))
-    corpus = ". ".join((skill_text, *reference_text, ui_text))
+    documents = (skill_text, *tuple(reference_map[name] for name in sorted(reference_map)), ui_text)
+    rendered_documents = tuple(_mask_contract_rendered_text(document) for document in documents)
+    corpus = ". ".join(rendered_documents)
     clauses = _contract_clauses(corpus)
     violations: list[str] = []
     for label, positive_patterns, negative_patterns in CONTRACT_CONTRADICTION_RULES:
         if _contract_rule_matches(clauses, positive_patterns, negative_patterns):
             violations.append(label)
-    skill_corpus = _normalize_contract_text(skill_text)
+    skill_corpus = _normalize_contract_text(rendered_documents[0])
     for label, pattern in REQUIRED_CONTRACT_PATTERNS:
         if pattern.search(skill_corpus) is None:
             violations.append(label)
     violations.extend(
         sensitive_contract_violations(
-            (skill_text, *tuple(reference_map.values()), ui_text)
+            rendered_documents
         )
     )
     return violations

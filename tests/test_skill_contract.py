@@ -472,8 +472,12 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not opt-out, although those tasks can rely on prior authorization.",
             "App tasks are not opt-out. Such tasks are authorized by prior requests.",
             "App tasks are not opt-out. Such tasks are created by default.",
+            "App tasks are not opt-out. They require no current-request authorization.",
+            "App tasks are not opt-out. They accept prior request authorization.",
             "Content failures do not authorize Terra fallback, but tool failures do.",
             "Content failures do not authorize Terra fallback. Such outcomes are sufficient reasons for Terra.",
+            "Content failures do not authorize Terra fallback. Such outcomes trigger Terra.",
+            "The manifest does not prove the effective route. It demonstrates the effective route.",
             "The manifest does not prove the effective route, while the probe does.",
         )
         for addition in rejected:
@@ -511,6 +515,108 @@ class SkillContractTests(unittest.TestCase):
                     ),
                     [],
                 )
+
+    def test_semantic_rendered_masking_and_linear_connector_chain(self) -> None:
+        hidden = (
+            "```text\nApp tasks may be created by default.\nApp tasks are opt-out rather than opt-in.\n```",
+            "`App tasks may be created by default.`",
+            "<!-- App tasks are opt-out rather than opt-in. -->",
+            "<!--\nApp tasks may be created by default.\nApp tasks are opt-out rather than opt-in.\n-->",
+            r"\\`App tasks may be created by default.\\`",
+        )
+        for addition in hidden:
+            with self.subTest(hidden=addition):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
+        escaped_visible = r"\`App tasks are opt-out rather than opt-in.\`"
+        self.assertTrue(
+            VALIDATOR.semantic_contract_violations(
+                self.skill + "\n" + escaped_visible,
+                self.references,
+                self.ui,
+            )
+        )
+
+        policy = next(
+            item
+            for item in VALIDATOR.SENSITIVE_CONTRACT_POLICIES
+            if item.label == "Failure-to-Terra/fallback policy is ambiguous or unsafe"
+        )
+
+        def connector_chain(size: int) -> str:
+            return "Content failures do not authorize Terra fallback" + (
+                ", tool failures do not authorize Terra fallback" * size
+            )
+
+        short_fragments = VALIDATOR._contract_sensitive_fragments(
+            connector_chain(64), policy
+        )
+        long_fragments = VALIDATOR._contract_sensitive_fragments(
+            connector_chain(128), policy
+        )
+        self.assertLessEqual(len(long_fragments), 2 * len(short_fragments) + 4)
+        validator_source = VALIDATOR_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("clause[boundary.end() :]", validator_source)
+        self.assertNotIn("clause[: boundary.start()]", validator_source)
+
+    def test_list_dialect_lazy_and_marker_boundaries_fail_closed(self) -> None:
+        lazy_link = "- item\nlazy continuation line\n    [Nested](model-routing.md)\n"
+        lazy_scan = VALIDATOR._scan_rendered_markdown_details(lazy_link)
+        self.assertIn("model-routing.md", lazy_scan.targets)
+        self.assertTrue(any("lazy list continuation" in item for item in lazy_scan.diagnostics))
+        lazy_map = dict(self.references)
+        lazy_map["workflow.md"] += lazy_link
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, lazy_map, SKILL_PATH),
+                [],
+            )
+
+        packet = self.references["task-contract.md"]
+        lazy_heading = packet + "\n- item\nlazy continuation line\n    ## Extra\n"
+        self.assertTrue(VALIDATOR.task_contract_violations(lazy_heading))
+
+        overspaced = "-     [Nested](model-routing.md)\n"
+        overspaced_scan = VALIDATOR._scan_rendered_markdown_details(overspaced)
+        self.assertEqual(overspaced_scan.targets, [])
+        self.assertTrue(any("more than four spaces" in item for item in overspaced_scan.diagnostics))
+        self.assertTrue(
+            VALIDATOR.task_contract_violations(packet + "\n-     ## Extra\n")
+        )
+
+        long_ordered = "1234567890. [Nested](model-routing.md)\n"
+        long_ordered_scan = VALIDATOR._scan_rendered_markdown_details(long_ordered)
+        self.assertTrue(any("more than nine digits" in item for item in long_ordered_scan.diagnostics))
+        self.assertTrue(
+            VALIDATOR.task_contract_violations(packet + "\n1234567890. ## Extra\n")
+        )
+
+        interrupted = "paragraph text\n2. [Nested](model-routing.md)\n"
+        interrupted_scan = VALIDATOR._scan_rendered_markdown_details(interrupted)
+        self.assertTrue(
+            any("cannot interrupt a paragraph" in item for item in interrupted_scan.diagnostics)
+        )
+        self.assertTrue(
+            VALIDATOR.task_contract_violations(packet + "\nparagraph text\n2. ## Extra\n")
+        )
+
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets("1. [Nested](model-routing.md)\n"),
+            ["model-routing.md"],
+        )
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(
+                "- item\n  - nested\n    [Nested](model-routing.md)\n"
+            ),
+            ["model-routing.md"],
+        )
 
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
