@@ -579,6 +579,60 @@ class SkillContractTests(unittest.TestCase):
                     [],
                 )
 
+    def test_alternative_authorization_scope_matrix(self) -> None:
+        rejected = (
+            "App tasks require explicit authorization for this workspace, not the current request.",
+            "App tasks require explicit authorization for this session, not the current request.",
+            "App tasks require explicit authorization for this project, not the current request.",
+            "App tasks require explicit authorization for this organization, not the current request.",
+            "App tasks require explicit current-request authorization; workspace approval is also sufficient.",
+            "App tasks require explicit current-request authorization unless project approval exists.",
+            "App tasks require explicit authorization in the current user request, but organization approval qualifies too.",
+            "App tasks require explicit current-request authorization, or as an alternative another approval can substitute.",
+            "App tasks require explicit current-request authorization; repository approval may be used instead.",
+            "App tasks require explicit current-request authorization; tenant authorization is acceptable.",
+            "App tasks require explicit current-request authorization; account consent qualifies too.",
+            "App tasks require explicit current-request authorization; team permission is sufficient.",
+            "App tasks require explicit current-request authorization; prior request authorization is sufficient.",
+        )
+        for addition in rejected:
+            with self.subTest(kind="rejected", addition=addition):
+                self.assertTrue(
+                    VALIDATOR._app_alternative_scope_is_unsafe(addition),
+                    addition,
+                )
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    addition,
+                )
+
+        accepted = (
+            "App tasks require explicit current-request authorization, not merely workspace approval.",
+            "Workspace approval is not sufficient; App tasks require explicit authorization in the current request.",
+            "Neither project nor organization approval substitutes for explicit current-request authorization.",
+            "App tasks require explicit current-request authorization; no other scope qualifies.",
+            "App tasks require explicit current-request authorization; neither project nor organization approval qualifies.",
+            "App tasks require explicit current-request authorization; workspace approval is not sufficient, but project approval is not acceptable.",
+        )
+        for addition in accepted:
+            with self.subTest(kind="accepted", addition=addition):
+                self.assertFalse(
+                    VALIDATOR._app_alternative_scope_is_unsafe(addition),
+                    addition,
+                )
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
     def test_open_container_paragraphs_are_shared_and_blank_code_is_masked(self) -> None:
         open_cases = (
             "ordinary paragraph\n      App tasks may be created by default.\n",

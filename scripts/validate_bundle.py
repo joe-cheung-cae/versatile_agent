@@ -446,13 +446,113 @@ APP_UNSAFE_OPT_IN_NEGATION_RE = re.compile(
     r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"
     r")"
 )
-APP_UNSAFE_SESSION_SCOPE_RE = re.compile(
+APP_ALTERNATIVE_SCOPE = (
     r"(?:"
-    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,60}\brequire\s+(?:an?\s+)?explicit\s+authori[sz]ation\s+for\s+the\s+session\b"
-    r"[^.!?;:]{0,40}\bnot\s+for\s+(?:the\s+)?current\s+request\b|"
-    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\bare\s+not\s+limited\s+to\s+(?:explicit\s+)?authori[sz]ation\s+in\s+(?:the\s+)?current\s+request\b"
+    r"(?:(?:the|this)\s+)?(?:session|workspace|project|organization|org|tenant|repository|repo|account|team)"
+    r"|(?:prior|previous|earlier)\s+(?:(?:user\s+)?request|approval|authori[sz]ation|consent|permission)"
+    r"|(?:other|another)\s+(?:scope|approval|authori[sz]ation|consent|permission)"
     r")"
 )
+APP_ALTERNATIVE_SCOPE_PHRASE = (
+    rf"{APP_ALTERNATIVE_SCOPE}(?:\s+(?:approval|authori[sz]ation|consent|permission))?"
+)
+APP_CURRENT_REQUEST_REQUIREMENT = (
+    r"(?:"
+    r"(?:explicit\s+)?current[-\s]+(?:user[-\s]+)?request\s+authori[sz]ation"
+    r"|explicit\s+authori[sz]ation\s+in\s+the\s+current(?:\s+user)?\s+request"
+    r")"
+)
+APP_ALTERNATIVE_SCOPE_RELATION = (
+    r"(?:"
+    r"(?:is|are)\s+(?:also\s+)?(?:sufficient|acceptable|enough)"
+    r"|(?:also\s+)?(?:sufficient|acceptable|enough)"
+    r"|qualif\w*(?:\s+too)?"
+    r"|(?:can|could|may|will)\s+(?:be\s+)?(?:used\s+instead|substitut\w*)"
+    r"|substitut\w*"
+    r")"
+)
+APP_ALTERNATIVE_SCOPE_TARGET_RE = re.compile(
+    rf"\b{APP_ALTERNATIVE_SCOPE_PHRASE}\b\s+{APP_ALTERNATIVE_SCOPE_RELATION}\b",
+    re.IGNORECASE,
+)
+APP_ALTERNATIVE_SCOPE_EXCEPTION_TARGET_RE = re.compile(
+    rf"\b{APP_ALTERNATIVE_SCOPE_PHRASE}\b",
+    re.IGNORECASE,
+)
+APP_ALTERNATIVE_SCOPE_UNSAFE_RE = re.compile(
+    rf"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?]{{0,110}}\b"
+    rf"(?:require|requires|need|needs)\s+(?:an?\s+)?{APP_CURRENT_REQUEST_REQUIREMENT}\b"
+    rf"[^.!?]{{0,120}}\b{APP_ALTERNATIVE_SCOPE_PHRASE}\b\s+"
+    rf"{APP_ALTERNATIVE_SCOPE_RELATION}\b",
+    re.IGNORECASE,
+)
+APP_ALTERNATIVE_SCOPE_NOT_LIMITED_RE = re.compile(
+    rf"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?]{{0,90}}\bare\s+not\s+limited\s+to\s+"
+    rf"(?:explicit\s+)?authori[sz]ation\s+in\s+(?:the\s+)?current(?:\s+user)?\s+request\b"
+    rf"[^.!?]{{0,100}}\b{APP_ALTERNATIVE_SCOPE_PHRASE}\b\s+"
+    rf"{APP_ALTERNATIVE_SCOPE_RELATION}\b",
+    re.IGNORECASE,
+)
+APP_ALTERNATIVE_SCOPE_UNLESS_RE = re.compile(
+    rf"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?]{{0,110}}\b"
+    rf"(?:require|requires|need|needs)\s+(?:an?\s+)?{APP_CURRENT_REQUEST_REQUIREMENT}\b"
+    rf"[^.!?]{{0,80}}\b(?:unless|except(?:\s+when)?)\b[^.!?]{{0,50}}\b"
+    rf"{APP_ALTERNATIVE_SCOPE_PHRASE}\b\s+"
+    rf"(?:exists?|is\s+(?:available|accepted|sufficient|acceptable|enough))\b",
+    re.IGNORECASE,
+)
+APP_ALTERNATIVE_SCOPE_NOT_CURRENT_RE = re.compile(
+    rf"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?]{{0,80}}\b"
+    rf"(?:require|requires|need|needs)\s+(?:an?\s+)?explicit\s+authori[sz]ation\s+"
+    rf"(?:for|in)\s+{APP_ALTERNATIVE_SCOPE_PHRASE}\b[^.!?]{{0,60}}\b"
+    rf"(?:not\s+(?:for\s+)?|rather\s+than\s+|instead\s+of\s+)"
+    rf"(?:the\s+)?current\s+request\b",
+    re.IGNORECASE,
+)
+APP_ALTERNATIVE_SCOPE_NEGATION_RE = re.compile(
+    r"\b(?:no|neither|not|never|does\s+not|doesn't|do\s+not|don't|cannot|can't|"
+    r"may\s+not|must\s+not|should\s+not)\b[^.!?;:]{0,80}$|\bnor\s*$",
+    re.IGNORECASE,
+)
+
+
+def _app_alternative_scope_is_unsafe(fragment: str) -> bool:
+    """Reject bounded alternate approval scopes for App task authorization.
+
+    This is a controlled contract-language rule, not general permission
+    inference.  A positive relation must be attached to an App-task
+    current-request requirement in the same sentence-sized span.  Local
+    ``no``, ``neither ... nor``, or direct prohibition immediately governing
+    that alternate scope suppresses only that candidate; a later positive
+    candidate remains independently unsafe.
+    """
+
+    normalized = _normalize_contract_text(fragment)
+    if APP_ALTERNATIVE_SCOPE_NOT_CURRENT_RE.search(normalized) is not None:
+        return True
+    for pattern in (
+        APP_ALTERNATIVE_SCOPE_UNSAFE_RE,
+        APP_ALTERNATIVE_SCOPE_NOT_LIMITED_RE,
+    ):
+        for match in pattern.finditer(normalized):
+            target = APP_ALTERNATIVE_SCOPE_TARGET_RE.search(match.group(0))
+            if target is None:
+                continue
+            prefix = match.group(0)[max(0, target.start() - 90) : target.start()]
+            if APP_ALTERNATIVE_SCOPE_NEGATION_RE.search(prefix) is not None:
+                continue
+            return True
+    for match in APP_ALTERNATIVE_SCOPE_UNLESS_RE.finditer(normalized):
+        candidates = list(
+            APP_ALTERNATIVE_SCOPE_EXCEPTION_TARGET_RE.finditer(match.group(0))
+        )
+        if not candidates:
+            continue
+        target = candidates[-1]
+        prefix = match.group(0)[max(0, target.start() - 90) : target.start()]
+        if APP_ALTERNATIVE_SCOPE_NEGATION_RE.search(prefix) is None:
+            return True
+    return False
 
 
 class _SensitiveContractPolicy(NamedTuple):
@@ -661,9 +761,10 @@ def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) 
     if (
         policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
         and (
+            _app_alternative_scope_is_unsafe(fragment)
+            or
             APP_UNSAFE_REQUIRE_NEGATION_RE.search(fragment) is not None
             or APP_UNSAFE_OPT_IN_NEGATION_RE.search(fragment) is not None
-            or APP_UNSAFE_SESSION_SCOPE_RE.search(fragment) is not None
         )
     ):
         return False
@@ -754,6 +855,10 @@ def sensitive_contract_violations(texts: tuple[str, ...]) -> list[str]:
         rendered_text = _mask_contract_rendered_text(text)
         paragraphs = re.split(r"\n[ \t]*\n", rendered_text)
         for paragraph in paragraphs:
+            if _app_alternative_scope_is_unsafe(paragraph):
+                label = "App task authorization/opt-in policy is ambiguous or unsafe"
+                if label not in violations:
+                    violations.append(label)
             clauses = _contract_clauses(paragraph)
             for index, clause in enumerate(clauses):
                 previous_clause = clauses[index - 1] if index else None
