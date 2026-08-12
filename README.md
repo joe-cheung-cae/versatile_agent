@@ -1,26 +1,31 @@
 # Codex Versatile Agent Workflow
 
 Offline-capable Codex bundle for an adaptive engineering lead, one reusable
-`versatile-dev` Skill, and twelve narrow custom agents. It supports project and
-user/global installation plus runtime capability diagnostics. It does **not**
-prove an effective native route or make Codex CLI automatically switch models.
+`versatile-dev` Skill, and 13 unique narrow custom agents. The bundle includes
+two distinct documentation researchers that can be used as a controlled Luna-
+first/Terra-second route. Installation profiles and diagnostic probes do not
+prove an effective native route, and this bundle does not make the Codex CLI
+automatically switch models.
 
-The implementation phases, acceptance matrix, runtime snapshot, and risk
-controls are recorded in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
+The implementation and acceptance record is in
+[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 
 ## What is included
 
-- Adaptive lead policy instead of a fixed orchestration DAG.
-- Twelve agents: mapping, documentation, architecture, implementation, testing,
-  test validation, general review, GPU review, numerical review, parallelism
-  review, profiling, and security review.
-- Role guidance assigns high-consequence planning/review to Sol and implementation
-  to Terra. Luna/Max remains capability-dependent; these assignments and
-  configuration pins are not runtime proof.
+- An adaptive lead policy instead of a fixed orchestration DAG.
+- 13 unique agents: `code_mapper`, `architect`, `implementer`, `tester`,
+  `test_validator`, `reviewer`, `gpu_reviewer`, `numerics_reviewer`,
+  `parallelism_reviewer`, `performance_profiler`, `security_reviewer`,
+  `docs_researcher_luna`, and `docs_researcher_terra`.
+- Two simultaneous documentation-researcher profiles with distinct names and
+  files: Luna requests `gpt-5.6-luna` / `max`; Terra requests
+  `gpt-5.6-terra` / `high`. Both are read-only.
 - Safe `[agents]` config merge that preserves unrelated TOML.
-- Idempotent project and user/global installation with recoverable backups.
-- Validation, installation-matrix tests, tarball packaging, a self-extracting
-  Bash installer, and SHA-256 checksums.
+- Idempotent project and user/global installation with recoverable backups and
+  historical single-researcher migration.
+- Deterministic offline routing, runtime-record, and per-attempt audit helpers.
+- Offline contract, state-machine, installer, and packaging checks, plus an
+  optional schema-review harness whose result remains unverified.
 
 ## Install from this source tree
 
@@ -50,47 +55,91 @@ Current Codex discovery locations are:
 Use `--with-agents-snippet` to append a small, idempotent activation note to
 project `AGENTS.md` or user `${CODEX_HOME:-$HOME/.codex}/AGENTS.md`.
 
-The installer writes `install-manifest.json` beside the Codex configuration,
-records the install-time `selected_profile`, and backs up changed files before
-replacement. `selected_profile` is not an effective runtime route. Start a fresh
-Codex task after installation so discovery reloads the Skill and custom agents.
+The installer writes a schema-v2 `install-manifest.json` beside the Codex
+configuration. It records installation/configuration facts, including the
+install-time `selected_profile`, 13 installed agent identities, and the two
+configured researcher pins. It does not record probe, observed, effective,
+capability, or fallback-success facts. `selected_profile` is a legacy
+compatibility selector, not an effective runtime route. Start a fresh Codex
+task after installation so discovery reloads the Skill and custom agents.
 
-## Routing profiles
+The bundle always installs the two distinct researcher files
+`docs_researcher_luna.toml` and `docs_researcher_terra.toml`; it never uses two
+profiles that overwrite the same `docs_researcher.toml` destination. A
+recognized historical `docs_researcher.toml` is backed up and removed during a
+normal install. `--check` reports migration pending until that is done, while
+customized, symlink, and directory conflicts are preserved and fail closed.
+`--dry-run` reports the migration without writing it.
 
-- `auto`: probes the selected CLI and App-bundled CLI, then selects an
-  install-time profile.
-- `luna-v1` / `luna-v2`: legacy profiles that configure `docs_researcher` with
-  `gpt-5.6-luna` / `max`.
-- `terra-fallback`: legacy profile that configures `docs_researcher` with
-  `gpt-5.6-terra` / `high`.
+## Compatibility profiles and native routing
 
-The probe and `--native-v2-luna yes` are diagnostic/capability inputs only;
-they do not provide verified live-interface or effective-route evidence. The
-current installer selects one legacy `docs_researcher` profile, so it cannot
-implement the target two-agent route by itself. That legacy agent may receive
-one research delegation only when the active interface exposes exactly
-`docs_researcher` and same-attempt native details verify its configured
-agent/model/effort; it is a single configured route, not fallback success.
-Missing or conflicting exposure/effective evidence is `STOP_UNVERIFIED` and
-does not authorize an alternate role.
+The accepted installer selectors are:
 
-The frozen target contract is explicit Skill orchestration: first
-`docs_researcher_luna` (`gpt-5.6-luna` / `max`), then at most one
-`docs_researcher_terra` (`gpt-5.6-terra` / `high`) only after a classified Luna
-native-routing failure and with the same canonical task packet. Missing or
-unknown effective metadata stops as `STOP_UNVERIFIED`; content, tool, task,
-timeout, and unknown-exception failures do not trigger Terra. This is not Codex
-CLI automatic fallback.
+- `auto`: probes the selected CLI and App-bundled CLI and converts the
+  diagnostic result into a compatibility profile.
+- `luna-v1`, `luna-v2`, and `terra-fallback`: retained legacy profile names for
+  compatibility with existing install commands and manifests.
 
-P0 freezes this contract and its audit semantics only. The dual-agent installer,
-deterministic route helper, and live conformance verification are future work;
-this repository does not yet claim them as implemented or verified.
+The probe, model catalog, `--native-v2-luna`, TOML pins, and compatibility
+profile are diagnostic or configured facts only. They cannot establish that a
+native spawn accepted a model, effort, agent type, or route. Unknown,
+conflicting, or unobservable facts remain unknown and fail closed.
 
-The App's separate user-visible task interface is a distinct, explicit-opt-in
-lane. If its active task tool accepts Luna/Max, that is App-task evidence only;
-it does not substitute for native spawning or prove native effective routing.
+For a classified documentation task, the Skill-owned route is explicit:
+
+1. Run the same-interface PRECHECK, which must expose both researcher names.
+2. Request `docs_researcher_luna` first.
+3. Permit exactly one `docs_researcher_terra` attempt only after a classified
+   native routing rejection or complete same-attempt native mismatch, with the
+   same canonical `task_packet_hash`.
+4. Treat content, tool, and task failures as terminal `STOP_FAILED`; a timeout
+   is `STOP_FAILED` only when route metadata is complete and non-conflicting.
+   Missing, conflicting, unobservable, or unknown route evidence is
+   `STOP_UNVERIFIED`. These outcomes do not authorize Terra.
+
+`payload/skills/versatile-dev/scripts/forward_router.py` accepts a closed,
+already-classified packet and can produce an offline plan or replay a complete
+route document:
+
+```text
+python3 payload/skills/versatile-dev/scripts/forward_router.py plan -
+python3 payload/skills/versatile-dev/scripts/forward_router.py replay PACKET.json ROUTE.json
+```
+
+The helper validates canonical packet hashes and route state; it does not
+classify English, spawn agents, probe, authenticate, access the network, or
+invent native effective metadata. The parent Skill remains the authority for
+native spawn and App actions.
+
+The Codex App's user-visible task lane is separate from native subagents and
+from Luna-to-Terra routing. It requires explicit authorization in the current
+user request. App requested/observed facts cannot populate native effective
+facts. The App lane used for this P3 development session is configured as
+`gpt-5.6-luna` / `max`; that is App-task context only, not repository or native
+runtime evidence.
+
+## Evidence and audit boundaries
+
+The installation manifest and each runtime attempt are separate artifacts:
+
+| Fact layer | What may establish it | What it cannot establish |
+| --- | --- | --- |
+| installed | Installed paths and manifest identities | The route used by a task |
+| configured | TOML pins and `[agents]` defaults | That native runtime accepted them |
+| capability | CLI/App-bundled CLI probe and model catalog | That a native attempt accepted or used them |
+| requested | This attempt's requested agent/model/effort | That the request was accepted |
+| observed | Same-attempt native details and sandbox/permission details | Values that were not returned |
+| effective | A complete tuple from same-attempt native details | Inferences from probe, catalog, TOML, or App facts |
+
+`runtime_records.py` keeps CLI, App-bundled CLI, native-spawn, and App-task
+records independent. `runtime_audit.py` writes a separate schema-v1,
+per-attempt `runtime_route_audit`; it preserves `unknown` instead of filling
+missing requested, configured, observed, or effective values. The manifest,
+probe, and App task cannot fill native effective fields.
 
 ## Validate and package
+
+The offline gates are:
 
 ```bash
 ./validate.sh
@@ -98,23 +147,43 @@ it does not substitute for native spawning or prove native effective routing.
 ./package.sh
 ```
 
-`package.sh` runs validation and tests, builds both deliverables in `dist/`,
-executes a clean self-extracting-installer smoke test, and writes `SHA256SUMS`.
+`validate.sh` checks shell/Python syntax, payload contracts, TOML, Skill
+structure, and runtime-probe structure. `tests/run.sh` runs the offline runtime,
+routing, manifest/audit, Skill/agent contract, config-merge, documentation, and
+installer tests; it does not run the optional live harness. `package.sh` runs
+validation and the offline test gate, copies the payload/scripts/tests and root
+documentation into a staging bundle, builds the tarball and self-extracting
+installer under `dist/`, smoke-tests project and user installs, and writes
+`SHA256SUMS`.
+
+The optional live boundary is explicit:
+
+```bash
+RUN_CODEX_LIVE=1 \
+CODEX_LIVE_EVIDENCE_FILE=/path/to/evidence.json \
+bash tests/test_live_codex.sh
+```
+
+`tests/test_live_codex.sh` is a schema-review harness only. It does not
+authenticate, run a fresh Codex task, or establish live fallback/conformance;
+when enabled it always returns `UNVERIFIED`, including for schema-valid sample
+evidence. The offline gates likewise do not claim live runtime conformance.
 
 ## Offline installer
 
 After copying the generated single file to another machine:
 
 ```bash
-chmod +x codex-versatile-agent-workflow-offline-installer-0.1.0.sh
-./codex-versatile-agent-workflow-offline-installer-0.1.0.sh \
+chmod +x codex-versatile-agent-workflow-offline-installer-<version>.sh
+./codex-versatile-agent-workflow-offline-installer-<version>.sh \
   --scope project \
   --target /path/to/repository \
   --profile auto
 ```
 
 The bundle installs offline. Actual model execution still depends on the target
-machine's Codex authentication, provider, model availability, and runtime policy.
+machine's Codex authentication, provider, model availability, and runtime
+policy.
 
 ## Verification-only commands
 
