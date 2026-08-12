@@ -9,6 +9,7 @@ import sys
 import tomllib
 from collections.abc import Mapping
 from pathlib import Path
+from typing import NamedTuple
 
 
 REQUIRED_AGENT_KEYS = {"name", "description", "developer_instructions", "model", "model_reasoning_effort", "sandbox_mode"}
@@ -84,10 +85,10 @@ TASK_CONTRACT_HEADINGS = (
     "## 5. Verification/handoff",
 )
 ATX_TASK_HEADING_RE = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.+?)[ \t]*$")
-FENCE_OPEN_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-FENCE_CLOSE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
 SETEXT_UNDERLINE_RE = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
-CONTRACT_CLAUSE_SPLIT_RE = re.compile(r"(?:[.!?;:]+(?=\s|$)|\b(?:but|however|although)\b)")
+CONTRACT_CLAUSE_SPLIT_RE = re.compile(
+    r"(?:[.!?;:。！？；：|]+(?=\s|$)|\b(?:but|however|although)\b)"
+)
 
 
 def _normalize_contract_text(text: str) -> str:
@@ -179,6 +180,7 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         ),
         (
             re.compile(rf"\b{FAILURE_SOURCE}\s+(?:never|does\s+not|do\s+not|cannot|can't)\s+{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
+            re.compile(rf"\bno\s+{FAILURE_SOURCE}\s+(?:(?:may|can|could|will)\s+)?{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
             re.compile(rf"\b{FAILURE_SOURCE}\s+{ROUTING_ACTION}\s+no\s+{ROUTING_TARGET}\b"),
             re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are)\s+(?:not|never)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
             re.compile(rf"\b(?:do\s+not|don't|never|must\s+not|should\s+not)\s+claim\s+that\s+{FAILURE_SOURCE}\s+{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
@@ -249,6 +251,7 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         (
             re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't|will\s+not)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
             re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are)\s+(?:not|never)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
+            re.compile(rf"\bneither\b[^.!?;:]{{0,120}}(?:prove|proves|proven|establish|establishes|established|demonstrate|demonstrates|demonstrated|confirm|confirms|confirmed)\s+{EFFECTIVE_ROUTE}\b"),
         ),
     ),
     (
@@ -287,6 +290,158 @@ CONTRACT_CONTRADICTION_RULES: tuple[
         ),
     ),
 )
+
+
+# The Skill contract uses a deliberately controlled semantic vocabulary.  A
+# sensitive clause that mentions one of these subject/action groups is legal
+# only when it contains an explicit prohibition/negation or an approved
+# positive form.  Unknown affirmative and modal wording fails closed; this is
+# intentionally bounded policy, not general natural-language inference.
+SENSITIVE_NEGATION_RE = re.compile(
+    r"\b(?:no|neither|nor|not|never|cannot|can't|may\s+not|will\s+not|"
+    r"does\s+not|doesn't|do\s+not|don't|must\s+not|should\s+not)\b"
+)
+
+
+class _SensitiveContractPolicy(NamedTuple):
+    label: str
+    subject: re.Pattern[str]
+    action: re.Pattern[str]
+    approved_positive: tuple[re.Pattern[str], ...] = ()
+
+
+SENSITIVE_CONTRACT_POLICIES: tuple[_SensitiveContractPolicy, ...] = (
+    _SensitiveContractPolicy(
+        "App task authorization/opt-in policy is ambiguous or unsafe",
+        re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b|\bcreate\s+an?\s+app(?:\s+user-visible)?\s+task\b"),
+        re.compile(
+            r"\b(?:authori[sz]|consent|opt[-\s]?(?:in|out)|prior|previous|earlier|past|"
+            r"carried|implicit|implied|rely|suffic|enough|optional|required|omit|default|"
+            r"create|created|creation)\w*\b"
+        ),
+        (
+            re.compile(
+                r"\b(?:create|creating)\s+an?\s+app(?:\s+user-visible)?\s+task\b"
+                r"[^.!?;:]{0,100}\bonly\s+(?:after|when)\s+(?:the\s+)?(?:user\s+)?"
+                r"(?:explicit(?:ly)?\s+)?authori[sz](?:e|ed|ation)\b[^.!?;:]{0,60}"
+                r"\bcurrent(?:[-\s]+user)?[-\s]+request\b"
+            ),
+            re.compile(
+                r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}"
+                r"\brequire(?:s)?\s+(?:an?\s+)?explicit\s+"
+                r"(?:current[-\s]+request\s+)?authori[sz]ation\b"
+            ),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\bexplicit\s+opt[-\s]?in\b"),
+            re.compile(r"\bonly\s+when\s+(?:the\s+)?user\s+(?:explicitly\s+)?authori[sz]es?\b"),
+        ),
+    ),
+    _SensitiveContractPolicy(
+        "Failure-to-Terra/fallback policy is ambiguous or unsafe",
+        re.compile(
+            r"\b(?:content|tool|task)(?:\s+\w+){0,2}\s+"
+            r"(?:failure|failures|fail|fails|failed|error|errors|outcome|outcomes)\b|"
+            r"\btimeout\b|\bunknown(?:[-\s]+(?:exception|failure|error|outcome))s?\b"
+        ),
+        re.compile(r"\b(?:terra|fallback|attempt|authorize|use|suffic|enough|reason)\w*\b"),
+    ),
+    _SensitiveContractPolicy(
+        "Offline-to-runtime/native conformance policy is ambiguous or unsafe",
+        re.compile(r"\boffline\s+(?:validation|checks?|validator)\b"),
+        re.compile(
+            r"\b(?:live|native|runtime|conformance|behavior|behaviour|proof|prove|proven|"
+            r"establish|establishes|established|confirm|confirms|confirmed|guarantee|guarantees)\w*\b"
+        ),
+    ),
+    _SensitiveContractPolicy(
+        "Skill authority over model/permissions/CLI policy is ambiguous or unsafe",
+        re.compile(r"\b(?:this\s+)?skill\b"),
+        re.compile(
+            r"\b(?:parent\s+model|permissions?|permission|model\s+availability|availability|"
+            r"automatic\s+cli|cli\s+(?:routing|fallback)|model\s+switch(?:ing)?|"
+            r"switch(?:es|ed)?|grant(?:s|ed)?|bypass(?:es|ed)?)\b"
+        ),
+    ),
+    _SensitiveContractPolicy(
+        "Probe/manifest/App evidence for effective route is ambiguous or unsafe",
+        re.compile(r"\b(?:probe|probes|installation\s+manifest|manifest|app\s+tasks?)\b"),
+        re.compile(
+            r"\b(?:infer|inferred|proof|prove|proven|establish|establishes|"
+            r"established|confirm|confirms|confirmed|guarantee|guarantees)\w*\b"
+        ),
+    ),
+)
+
+
+def _contract_sensitive_fragments(clause: str, policy: _SensitiveContractPolicy) -> list[str]:
+    """Return a clause plus connector-local fragments with subject carry-over."""
+
+    fragments = [clause]
+    predicate = re.compile(
+        r"\b(?:is|are|was|were|may|can|could|will|must|should|do|does|did|"
+        r"authorize|authorizes|allow|allows|require|requires|rely|relies|"
+        r"grant|grants|change|changes|switch|switches|prove|proves|"
+        r"establish|establishes|confirm|confirms|guarantee|guarantees|"
+        r"use|uses|attempt|attempts|fallback|falls?)\b"
+    )
+    boundaries = list(re.finditer(r"\b(?:and|but|however|although)\b", clause))
+    for boundary in boundaries:
+        right = clause[boundary.end() :].strip()
+        if not right or predicate.search(right) is None:
+            continue
+        fragments.append(right)
+        left = clause[: boundary.start()]
+        for subject in policy.subject.finditer(left):
+            fragments.append(f"{subject.group(0)} {right}")
+    return fragments
+
+
+def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) -> bool:
+    if SENSITIVE_NEGATION_RE.search(fragment) is not None:
+        return True
+    return any(pattern.search(fragment) is not None for pattern in policy.approved_positive)
+
+
+def _strip_inline_code_for_contract(text: str) -> str:
+    """Remove balanced inline-code spans before classifying contract prose."""
+
+    output: list[str] = []
+    index = 0
+    while index < len(text):
+        if text[index] != "`":
+            output.append(text[index])
+            index += 1
+            continue
+        run_end = index + 1
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        run_length = run_end - index
+        close = text.find("`" * run_length, run_end)
+        if close < 0:
+            output.extend(" " for _ in text[index:])
+            break
+        output.extend(" " for _ in text[index : close + run_length])
+        index = close + run_length
+    return "".join(output)
+
+
+def sensitive_contract_violations(texts: tuple[str, ...]) -> list[str]:
+    """Fail closed for unknown affirmative/modal clauses in protected groups."""
+
+    violations: list[str] = []
+    for text in texts:
+        lines, _ = _unfenced_lines(text)
+        rendered_text = _strip_inline_code_for_contract("\n".join(lines))
+        for clause in _contract_clauses(rendered_text):
+            for policy in SENSITIVE_CONTRACT_POLICIES:
+                for fragment in _contract_sensitive_fragments(clause, policy):
+                    if policy.subject.search(fragment) and policy.action.search(fragment):
+                        if not _sensitive_clause_is_legal(fragment, policy):
+                            if policy.label not in violations:
+                                violations.append(policy.label)
+                            break
+                if policy.label in violations:
+                    break
+    return violations
 REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "App task must require explicit current-request authorization",
@@ -313,7 +468,7 @@ def _normalize_reference_label(label: str) -> str:
     return re.sub(r"\s+", " ", label.casefold().strip())
 
 
-def _line_fence_marker(line: str) -> tuple[str, int] | None:
+def _fence_marker_details(line: str) -> tuple[str, int, int] | None:
     indent = 0
     while indent < len(line) and indent < 3 and line[indent] == " ":
         indent += 1
@@ -325,7 +480,70 @@ def _line_fence_marker(line: str) -> tuple[str, int] | None:
         end += 1
     if end - indent < 3:
         return None
-    return marker, end - indent
+    return marker, end - indent, end
+
+
+def _invalid_backtick_fence_opener(line: str) -> bool:
+    details = _fence_marker_details(line)
+    return details is not None and details[0] == "`" and "`" in line[details[2] :]
+
+
+def _line_fence_marker(line: str) -> tuple[str, int] | None:
+    """Return a valid fence marker; backtick info strings cannot contain backticks."""
+
+    if _invalid_backtick_fence_opener(line):
+        return None
+    details = _fence_marker_details(line)
+    return None if details is None else details[:2]
+
+
+def _fence_closes(line: str, active_char: str, active_length: int) -> bool:
+    details = _fence_marker_details(line)
+    if details is None:
+        return False
+    marker, length, end = details
+    return marker == active_char and length >= active_length and not line[end:].strip()
+
+
+def _is_indented_code_line(line: str) -> bool:
+    return line.startswith("\t") or line.startswith("    ")
+
+
+def _is_escaped(text: str, index: int) -> bool:
+    backslashes = 0
+    index -= 1
+    while index >= 0 and text[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
+
+
+def _inline_target_end(line: str, start: int) -> int | None:
+    """Find a simple balanced inline destination close in one linear pass."""
+
+    if start >= len(line):
+        return None
+    angle_target = line[start] == "<"
+    angle_closed = not angle_target
+    depth = 0
+    index = start
+    while index < len(line):
+        if line[index] == "\\":
+            index += 2
+            continue
+        if angle_target and not angle_closed:
+            if line[index] == ">" and not _is_escaped(line, index):
+                angle_closed = True
+            index += 1
+            continue
+        if line[index] == "(":
+            depth += 1
+        elif line[index] == ")":
+            if depth == 0:
+                return index
+            depth -= 1
+        index += 1
+    return None
 
 
 def _parse_reference_definition(line: str) -> tuple[str, str] | None:
@@ -360,35 +578,52 @@ def _parse_reference_definition(line: str) -> tuple[str, str] | None:
     return (label, target) if label else None
 
 
-def _scan_rendered_markdown(text: str) -> tuple[list[str], list[str]]:
-    """Scan the needed Markdown link subset once, ignoring code and images."""
+class _MarkdownScan(NamedTuple):
+    targets: list[str]
+    unresolved: list[str]
+    diagnostics: list[str]
+
+
+def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
+    """Scan the bounded Markdown subset once, returning fail-closed diagnostics."""
 
     definitions: dict[str, str] = {}
     direct_targets: list[str] = []
     reference_usages: list[tuple[str, bool]] = []
+    diagnostics: list[str] = []
     fence_marker: str | None = None
     fence_length = 0
 
     for line in text.splitlines():
-        marker = _line_fence_marker(line)
         if fence_marker is not None:
-            if marker is not None and marker[0] == fence_marker and marker[1] >= fence_length:
-                remainder = line[line.find(marker[0]) + marker[1] :].strip()
-                if not remainder:
-                    fence_marker = None
-                    fence_length = 0
+            if _fence_closes(line, fence_marker, fence_length):
+                fence_marker = None
+                fence_length = 0
             continue
+
+        if _invalid_backtick_fence_opener(line):
+            diagnostics.append("invalid backtick fence opener")
+        marker = _line_fence_marker(line)
         if marker is not None:
             fence_marker, fence_length = marker
             continue
 
+        if _is_indented_code_line(line):
+            continue
+
         definition = _parse_reference_definition(line)
         if definition is not None:
-            definitions[definition[0]] = definition[1]
+            label, target = definition
+            if label in definitions:
+                diagnostics.append(f"duplicate reference definition: {label}")
+            else:
+                definitions[label] = target
             continue
 
         i = 0
         label_start: int | None = None
+        candidate_start: int | None = None
+        ambiguous_brackets = False
         while i < len(line):
             if line[i] == "`":
                 run_end = i + 1
@@ -396,29 +631,47 @@ def _scan_rendered_markdown(text: str) -> tuple[list[str], list[str]]:
                     run_end += 1
                 run_length = run_end - i
                 close = line.find("`" * run_length, run_end)
-                i = len(line) if close < 0 else close + run_length
+                if close < 0:
+                    diagnostics.append("unclosed or unequal inline backtick run")
+                    i = len(line)
+                else:
+                    i = close + run_length
                 label_start = None
+                candidate_start = None
                 continue
 
             if line[i] == "[" and label_start is None:
+                if _is_escaped(line, i):
+                    i += 1
+                    continue
                 label_start = i + 1
-                image = i > 0 and line[i - 1] == "!"
                 candidate_start = i
+                i += 1
+                continue
+
+            if line[i] == "[" and label_start is not None:
+                if not ambiguous_brackets:
+                    diagnostics.append("nested bracket label is ambiguous")
+                    ambiguous_brackets = True
                 i += 1
                 continue
 
             if line[i] == "]" and label_start is not None:
                 label = line[label_start:i]
-                image = candidate_start > 0 and line[candidate_start - 1] == "!"
+                image = (
+                    candidate_start is not None
+                    and candidate_start > 0
+                    and line[candidate_start - 1] == "!"
+                    and not _is_escaped(line, candidate_start - 1)
+                )
                 next_index = i + 1
                 while next_index < len(line) and line[next_index] in " \t":
                     next_index += 1
                 consumed = i + 1
                 if next_index < len(line) and line[next_index] == "(":
-                    target_end = next_index + 1
-                    while target_end < len(line) and line[target_end] != ")":
-                        target_end += 1
-                    if target_end >= len(line):
+                    target_end = _inline_target_end(line, next_index + 1)
+                    if target_end is None:
+                        diagnostics.append("unclosed inline link target")
                         i = len(line)
                     else:
                         if not image:
@@ -443,6 +696,9 @@ def _scan_rendered_markdown(text: str) -> tuple[list[str], list[str]]:
 
             i += 1
 
+    if fence_marker is not None:
+        diagnostics.append("unclosed fenced code block")
+
     raw_targets = list(direct_targets)
     unresolved: list[str] = []
     for label, explicit in reference_usages:
@@ -458,7 +714,14 @@ def _scan_rendered_markdown(text: str) -> tuple[list[str], list[str]]:
         target = _normalize_markdown_target(raw_target)
         if target is not None:
             targets.append(target)
-    return targets, unresolved
+    return _MarkdownScan(targets, unresolved, diagnostics)
+
+
+def _scan_rendered_markdown(text: str) -> tuple[list[str], list[str]]:
+    """Return rendered targets and unresolved explicit references."""
+
+    scan = _scan_rendered_markdown_details(text)
+    return scan.targets, scan.unresolved
 
 
 def extract_local_markdown_targets(text: str) -> list[str]:
@@ -510,6 +773,11 @@ def semantic_contract_violations(
     for label, pattern in REQUIRED_CONTRACT_PATTERNS:
         if pattern.search(skill_corpus) is None:
             violations.append(label)
+    violations.extend(
+        sensitive_contract_violations(
+            (skill_text, *tuple(reference_map.values()), ui_text)
+        )
+    )
     return violations
 
 
@@ -521,21 +789,16 @@ def _unfenced_lines(text: str) -> tuple[list[str], bool]:
     fence_length = 0
     for line in text.splitlines():
         if fence_char is None:
-            opening = FENCE_OPEN_RE.match(line)
-            if opening is not None:
-                fence = opening.group(1)
-                fence_char = fence[0]
-                fence_length = len(fence)
+            marker = _line_fence_marker(line)
+            if marker is not None:
+                fence_char, fence_length = marker
                 continue
             rendered.append(line)
             continue
 
-        closing = FENCE_CLOSE_RE.match(line)
-        if closing is not None:
-            fence = closing.group(1)
-            if fence[0] == fence_char and len(fence) >= fence_length:
-                fence_char = None
-                fence_length = 0
+        if _fence_closes(line, fence_char, fence_length):
+            fence_char = None
+            fence_length = 0
     return rendered, fence_char is not None
 
 
@@ -564,6 +827,8 @@ def task_contract_violations(text: str) -> list[str]:
         violations.append(f"task-contract must not contain rendered H3-H6 headings: {non_h2_headings}")
     if unclosed_fence:
         violations.append("task-contract contains an unclosed fenced code block")
+    if any(_invalid_backtick_fence_opener(line) for line in text.splitlines()):
+        violations.append("task-contract contains an invalid backtick fence opener")
     for index, line in enumerate(lines[:-1]):
         if line.strip() and SETEXT_UNDERLINE_RE.match(lines[index + 1]):
             violations.append("task-contract must not contain rendered Setext headings")
@@ -586,7 +851,10 @@ def reference_topology_violations(
         )
 
     expected_links = {f"references/{name}" for name in SKILL_REFERENCE_FILES}
-    rendered_skill_links, unresolved_skill_links = _scan_rendered_markdown(skill_text)
+    skill_scan = _scan_rendered_markdown_details(skill_text)
+    rendered_skill_links, unresolved_skill_links = skill_scan.targets, skill_scan.unresolved
+    for diagnostic in skill_scan.diagnostics:
+        violations.append(f"SKILL.md Markdown scan is ambiguous or invalid: {diagnostic}")
     local_links = set(rendered_skill_links)
     for label in unresolved_skill_links:
         violations.append(f"SKILL.md has an unresolved reference-style link: {label}")
@@ -599,7 +867,10 @@ def reference_topology_violations(
                 violations.append(f"SKILL.md has an unresolved local link: {target}")
 
     for name, text in reference_map.items():
-        rendered_links, unresolved_links = _scan_rendered_markdown(text)
+        reference_scan = _scan_rendered_markdown_details(text)
+        rendered_links, unresolved_links = reference_scan.targets, reference_scan.unresolved
+        for diagnostic in reference_scan.diagnostics:
+            violations.append(f"skill reference Markdown scan is ambiguous or invalid: {name}: {diagnostic}")
         for label in unresolved_links:
             violations.append(f"skill reference has an unresolved reference-style link: {name}: {label}")
         nested_links = [target for target in rendered_links if target.casefold().endswith(".md")]

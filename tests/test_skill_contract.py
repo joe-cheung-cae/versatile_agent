@@ -375,6 +375,75 @@ class SkillContractTests(unittest.TestCase):
                     [],
                 )
 
+    def test_sensitive_contract_language_fails_closed(self) -> None:
+        rejected = (
+            "App tasks are opt-out rather than opt-in.",
+            "App task creation may use authorization carried over from an earlier request.",
+            "When content fails, fall back to Terra.",
+            "A timeout is sufficient reason to attempt Terra.",
+            "Offline validation guarantees native runtime behavior.",
+            "This Skill grants permissions.",
+            "App tasks may rely on authorization from a prior request.",
+            "Content failures and native routing failures may authorize Terra fallback.",
+        )
+        for addition in rejected:
+            with self.subTest(addition=addition):
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    addition,
+                )
+
+        accepted = (
+            "No content failure may authorize Terra fallback.",
+            "Neither the manifest nor a probe establishes the effective native route.",
+            "App tasks are not opt-out and require explicit current-request authorization.",
+            "A timeout is not a sufficient reason to attempt Terra.",
+            "Offline validation does not guarantee native runtime behavior.",
+            "This Skill does not grant permissions.",
+            "Neither content failures nor tool failures authorize Terra fallback.",
+        )
+        for addition in accepted:
+            with self.subTest(addition=addition):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
+        compound_contradictions = (
+            "No content failure may authorize Terra fallback and tool failures may authorize Terra fallback.",
+            "This Skill does not change the parent model and this Skill grants permissions.",
+            "Offline validation does not guarantee native runtime behavior and offline validation will establish live runtime conformance.",
+            "App tasks are not opt-out and App tasks may rely on implied authorization.",
+        )
+        for addition in compound_contradictions:
+            with self.subTest(addition=addition):
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    addition,
+                )
+
+        weakened = self.skill.replace(
+            "only after explicit authorization in the current user request",
+            "after authorization in the current user request",
+        )
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.semantic_contract_violations(weakened, self.references, self.ui),
+                [],
+            )
+
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
             "references/task-contract.md",
@@ -533,6 +602,114 @@ class SkillContractTests(unittest.TestCase):
 
         malformed_brackets = "[" * 100_000
         self.assertEqual(VALIDATOR.extract_local_markdown_targets(malformed_brackets), [])
+        self.assertEqual(VALIDATOR.extract_local_markdown_targets("[" * 200_000), [])
+        validator_source = VALIDATOR_PATH.read_text(encoding="utf-8")
+        self.assertNotIn("INLINE_MARKDOWN_LINK_RE", validator_source)
+        self.assertNotIn("REFERENCE_USAGE_RE", validator_source)
+
+        duplicate_reference_map = dict(self.references)
+        duplicate_reference_map["workflow.md"] += (
+            "\n[route]: references/model-routing.md\n"
+            "[route]: https://example.com/model-routing.md\n"
+            "[Routing][route]\n"
+        )
+        duplicate_scan = VALIDATOR._scan_rendered_markdown_details(
+            duplicate_reference_map["workflow.md"]
+        )
+        self.assertIn("references/model-routing.md", duplicate_scan.targets)
+        self.assertTrue(any("duplicate reference definition" in item for item in duplicate_scan.diagnostics))
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, duplicate_reference_map, SKILL_PATH),
+                [],
+            )
+
+        indented_only_links = re.sub(
+            r"\[[^\]]+\]\(\s*(?:<[^>]+>|[^\s)]+)\)",
+            "",
+            self.skill,
+        ) + "\n" + "\n".join(
+            f"    [indented-{name}](references/{name})" for name in sorted(REQUIRED_REFERENCES)
+        )
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(indented_only_links, self.references, SKILL_PATH),
+                [],
+            )
+        tab_indented = "\n".join(
+            f"\t[tab-{name}](references/{name})" for name in sorted(REQUIRED_REFERENCES)
+        )
+        self.assertEqual(VALIDATOR.extract_local_markdown_targets(tab_indented), [])
+
+        escaped_image_map = dict(self.references)
+        escaped_image_map["workflow.md"] += r"\![escaped](model-routing.md)" + "\n"
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(r"\![escaped](model-routing.md)"),
+            ["model-routing.md"],
+        )
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(r"\\![even-slash](model-routing.md)"),
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR.extract_local_markdown_targets(r"\\\![odd-slash](model-routing.md)"),
+            ["model-routing.md"],
+        )
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, escaped_image_map, SKILL_PATH),
+                [],
+            )
+
+        image_map = dict(self.references)
+        image_map["workflow.md"] += "![image](model-routing.md)\n"
+        self.assertEqual(VALIDATOR.extract_local_markdown_targets("![image](model-routing.md)"), [])
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(self.skill, image_map, SKILL_PATH),
+            [],
+        )
+
+        invalid_fence_map = dict(self.references)
+        invalid_fence_map["workflow.md"] += "```bad` info\n[Nested](model-routing.md)\n"
+        invalid_scan = VALIDATOR._scan_rendered_markdown_details(invalid_fence_map["workflow.md"])
+        self.assertIn("model-routing.md", invalid_scan.targets)
+        self.assertTrue(any("invalid backtick fence opener" in item for item in invalid_scan.diagnostics))
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, invalid_fence_map, SKILL_PATH),
+                [],
+            )
+
+        invalid_fenced_skill = re.sub(
+            r"\[[^\]]+\]\(\s*(?:<[^>]+>|[^\s)]+)\)",
+            "",
+            self.skill,
+        ) + "\n```bad` info\n" + required_links + "\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(invalid_fenced_skill, self.references, SKILL_PATH),
+                [],
+            )
+
+        nested_label_map = dict(self.references)
+        nested_label_map["workflow.md"] += "\n[Outer [Inner](model-routing.md)](workflow.md)\n"
+        nested_scan = VALIDATOR._scan_rendered_markdown_details(nested_label_map["workflow.md"])
+        self.assertTrue(any("nested bracket label" in item for item in nested_scan.diagnostics))
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, nested_label_map, SKILL_PATH),
+                [],
+            )
+
+        unequal_backticks_map = dict(self.references)
+        unequal_backticks_map["workflow.md"] += "\n`broken [Nested](model-routing.md)``\n"
+        unequal_scan = VALIDATOR._scan_rendered_markdown_details(unequal_backticks_map["workflow.md"])
+        self.assertTrue(any("inline backtick" in item for item in unequal_scan.diagnostics))
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(self.skill, unequal_backticks_map, SKILL_PATH),
+                [],
+            )
 
         unused_definitions = "\n".join(
             f"[unused-{name}]: references/{name}" for name in sorted(REQUIRED_REFERENCES)
@@ -582,6 +759,10 @@ class SkillContractTests(unittest.TestCase):
             VALIDATOR.task_contract_violations(packet + "\n- ordinary packet detail\n"),
             [],
         )
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + "\n    ### Indented code heading\n"),
+            [],
+        )
         closed_hash_packet = re.sub(
             r"(?m)^(## (?:1\. Objective|2\. Ownership|3\. Inputs/evidence|4\. Constraints/requirements|5\. Verification/handoff))$",
             r"\1 ##",
@@ -599,6 +780,10 @@ class SkillContractTests(unittest.TestCase):
         mismatched_unclosed = packet + "\n~~~~markdown\n## Extra\n```\n"
         with self.assertRaises(AssertionError):
             self.assertEqual(VALIDATOR.task_contract_violations(mismatched_unclosed), [])
+
+        invalid_fence_heading = packet + "\n```bad` info\n### Rendered H3\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(VALIDATOR.task_contract_violations(invalid_fence_heading), [])
 
 
 if __name__ == "__main__":
