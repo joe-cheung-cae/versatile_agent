@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from bisect import bisect_left
 import html
+import posixpath
 import re
 import sys
 import tomllib
@@ -210,6 +211,7 @@ CONTRACT_CONTRADICTION_RULES: tuple[
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:require|requires|need|needs)\s+no\s+(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bno\s+(?:explicit\s+)?authori[sz]ation\s+(?:is\s+)?required\s+for\s+app(?:\s+user-visible)?\s+tasks?\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:do\s+not|don't|never)\s+require\s+(?:any\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:cannot|can't|must\s+not|should\s+not|may\s+not)\s+require\s+(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"),
             re.compile(r"\b(?:create|creating)\s+(?:an?\s+)?app(?:\s+user-visible)?\s+task\b[^.!?;:]{0,80}\bwithout\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:may|can|could|will|is|are)\s+(?:be\s+)?created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}\b(?:may|can|could|will)\s+(?:be\s+)?created[^.!?;:]{0,40}\bby\s+default\b"),
@@ -412,6 +414,12 @@ APP_LEGAL_ACCEPT_NEGATION_RE = re.compile(
     r"(?:implicit|implied)\s+consent\b"
     r"|\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\baccept\s+no\s+"
     r"(?:the\s+)?(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\b"
+)
+APP_UNSAFE_REQUIRE_NEGATION_RE = re.compile(
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,35}\b"
+    r"(?:cannot|can't|must\s+not|should\s+not|may\s+not)\s+require\b"
+    r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?"
+    r"authori[sz]ation\b"
 )
 
 
@@ -620,6 +628,11 @@ def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) 
         return False
     if (
         policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
+        and APP_UNSAFE_REQUIRE_NEGATION_RE.search(fragment) is not None
+    ):
+        return False
+    if (
+        policy.label == "App task authorization/opt-in policy is ambiguous or unsafe"
         and APP_LEGAL_ACCEPT_NEGATION_RE.search(fragment) is not None
     ):
         return True
@@ -730,17 +743,56 @@ REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def _normalize_markdown_target(raw_target: str) -> str | None:
+def _decode_percent_escapes(text: str) -> str:
+    decoded = text
+    for _ in range(4):
+        next_value = unquote(decoded)
+        if next_value == decoded:
+            return decoded
+        decoded = next_value
+    return decoded
+
+
+def _normalize_markdown_target_details(
+    raw_target: str,
+) -> tuple[str | None, str | None]:
     target = _decode_html_entities(raw_target.strip())
     if target.startswith("<") and target.endswith(">"):
         target = target[1:-1].strip()
-    target = unquote(target)
+    target = _decode_percent_escapes(target)
     if not target or target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
-        return None
+        return None, None
     target = re.split(r"[?#]", target, maxsplit=1)[0]
     while target.startswith("./"):
         target = target[2:]
-    return target or None
+    if not target:
+        return None, None
+
+    had_trailing_separator = target.endswith("/")
+    normalized = posixpath.normpath(target)
+    if normalized in {"", "."}:
+        return None, "empty local Markdown destination"
+
+    # Normalize dot segments before topology classification, but preserve the
+    # evidence that a Markdown file-shaped path was followed by another path
+    # separator or component.  Such a target must not masquerade as an exact
+    # first-level sibling file.
+    path_casefold = target.casefold()
+    invalid_file_shape = (
+        ".md/" in path_casefold
+        or (had_trailing_separator and normalized.casefold().endswith(".md"))
+    )
+    diagnostic = (
+        "local Markdown destination has a file-shaped path suffix or trailing separator"
+        if invalid_file_shape
+        else None
+    )
+    return normalized, diagnostic
+
+
+def _normalize_markdown_target(raw_target: str) -> str | None:
+    target, _ = _normalize_markdown_target_details(raw_target)
+    return target
 
 
 def _normalize_reference_label(label: str) -> str:
@@ -1003,10 +1055,10 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
 
     normalized: list[str] = []
     diagnostics: list[str] = []
-    # Entries are (marker-start column, content-start column).  Keeping both
-    # columns makes compact two-space nesting and wide ordered markers
-    # deterministic without assuming a four-space list width.
-    list_stack: list[tuple[int, int]] = []
+    # Entries are (marker-start column, content-start column, paragraph-open).
+    # Keeping the open-paragraph bit with each item prevents a blank-separated
+    # code block from borrowing the state of a sibling container.
+    list_stack: list[tuple[int, int, bool]] = []
 
     list_blank_pending = False
     lazy_continuation_active = False
@@ -1041,12 +1093,15 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 list_stack.pop()
             if list_stack and list_stack[-1][0] == marker_start:
                 list_stack.pop()
-            list_stack.append((marker_start, content_start))
             content, _, _, content_exhausted = _peel_container_prefixes_details(
                 list_match.group(4)
             )
             if content_exhausted:
                 diagnostics.append("container prefix depth exceeded in Markdown line")
+            paragraph_open = bool(content.strip()) and not _is_block_boundary_line(content)
+            if LIST_ITEM_RE.match(content) is not None:
+                paragraph_open = False
+            list_stack.append((marker_start, content_start, paragraph_open))
             normalized.append(content)
             lazy_continuation_active = False
             paragraph_active = False
@@ -1079,7 +1134,7 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 candidate_index = max(
                     (
                         index
-                        for index, (_, content_start) in enumerate(list_stack)
+                        for index, (_, content_start, _) in enumerate(list_stack)
                         if leading_spaces >= content_start
                     ),
                     default=-1,
@@ -1101,6 +1156,27 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     paragraph_active = False
                     continue
                 candidate_leading = len(candidate) - len(candidate.lstrip(" "))
+                item_paragraph_open = list_stack[candidate_index][2]
+                if (
+                    candidate_leading >= 4
+                    and item_paragraph_open
+                    and not list_blank_pending
+                    and not lazy_continuation_active
+                ):
+                    # An open list paragraph keeps its continuation rendered,
+                    # even at six source-column spaces.  Mark it once so
+                    # heading validation does not mistake paragraph text for
+                    # an ATX heading.
+                    list_stack = list_stack[: candidate_index + 1]
+                    normalized.append(
+                        _RenderedLine(
+                            candidate.lstrip(" \t"), paragraph_continuation=True
+                        )
+                    )
+                    list_blank_pending = False
+                    paragraph_active = True
+                    root_indented_code_active = False
+                    continue
                 if candidate.startswith("\t") or candidate_leading >= 4:
                     # Four spaces beyond a list item's content start are an
                     # indented code block.  Keep the source text and mark it
@@ -1149,7 +1225,28 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 lazy_continuation_active = False
 
         # A blockquote is a rendered container even when it follows a list;
-        # top-level four-space and tab-indented lines remain code.
+        # its own open paragraph likewise keeps an indented continuation
+        # rendered, while a blank-separated continuation is code.
+        if not list_stack and blockquote_count > 0:
+            leading_spaces = len(line) - len(line.lstrip(" "))
+            if line.startswith("\t") or leading_spaces >= 4:
+                if paragraph_active and not root_indented_code_active:
+                    normalized.append(
+                        _RenderedLine(
+                            line.lstrip(" \t"), paragraph_continuation=True
+                        )
+                    )
+                    root_indented_code_active = False
+                    paragraph_active = True
+                else:
+                    normalized.append(_RenderedLine(line, indented_code=True))
+                    root_indented_code_active = True
+                    paragraph_active = False
+                list_blank_pending = False
+                continue
+
+        # At the document root, four-space and tab-indented lines remain code
+        # unless the immediately preceding paragraph is still open.
         if not list_stack and blockquote_count == 0:
             leading_spaces = len(line) - len(line.lstrip(" "))
             if line.startswith("\t") or leading_spaces >= 4:
@@ -1167,7 +1264,7 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                     # A blank-separated root indentation is a genuine code
                     # block.  The empty rendered line is shared by scanner,
                     # task headings, and both semantic validation passes.
-                    normalized.append("")
+                    normalized.append(_RenderedLine("", indented_code=True))
                     root_indented_code_active = True
                     paragraph_active = False
                 list_blank_pending = False
@@ -1201,7 +1298,7 @@ def _strip_blockquote_prefixes(line: str) -> tuple[str, int]:
 def _accept_list_marker(
     marker_start: int,
     marker: str,
-    list_stack: list[tuple[int, int]],
+    list_stack: list[tuple[int, int, bool]],
     diagnostics: list[str],
     paragraph_active: bool,
 ) -> bool:
@@ -1210,7 +1307,7 @@ def _accept_list_marker(
             diagnostics.append("ordered list marker other than one cannot interrupt a paragraph")
             return False
         return marker_start <= 3
-    parent_marker, parent_content = list_stack[-1]
+    parent_marker, parent_content, _ = list_stack[-1]
     if marker_start > parent_marker and marker_start < parent_content:
         diagnostics.append("ambiguous list marker indentation")
     return marker_start == 0 or marker_start >= parent_content
@@ -1580,7 +1677,9 @@ def _scan_rendered_markdown_details(text: str) -> _MarkdownScan:
 
     targets: list[str] = []
     for raw_target in raw_targets:
-        target = _normalize_markdown_target(raw_target)
+        target, target_diagnostic = _normalize_markdown_target_details(raw_target)
+        if target_diagnostic is not None:
+            diagnostics.append(target_diagnostic)
         if target is not None:
             targets.append(target)
     return _MarkdownScan(targets, unresolved, diagnostics)

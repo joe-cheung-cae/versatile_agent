@@ -534,6 +534,199 @@ class SkillContractTests(unittest.TestCase):
                     [],
                 )
 
+    def test_unsafe_modal_authorization_negations_are_not_legal(self) -> None:
+        rejected = (
+            "App tasks cannot require explicit current-request authorization.",
+            "App tasks must not require explicit current-request authorization.",
+            "App tasks should not require explicit current-request authorization.",
+            "App tasks may not require explicit current-request authorization.",
+        )
+        for addition in rejected:
+            with self.subTest(addition=addition):
+                violations = VALIDATOR.semantic_contract_violations(
+                    self.skill + "\n" + addition,
+                    self.references,
+                    self.ui,
+                )
+                self.assertIn("App task may bypass current-request authorization", violations)
+                self.assertIn(
+                    "App task authorization/opt-in policy is ambiguous or unsafe",
+                    violations,
+                )
+
+        accepted = (
+            "App tasks do not accept prior request authorization.",
+            "App tasks must not be created without explicit current-request authorization.",
+            "App tasks may not rely on implicit consent.",
+        )
+        for addition in accepted:
+            with self.subTest(addition=addition):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
+    def test_open_container_paragraphs_are_shared_and_blank_code_is_masked(self) -> None:
+        open_cases = (
+            "ordinary paragraph\n      App tasks may be created by default.\n",
+            "- ordinary paragraph\n      App tasks may be created by default.\n",
+            "> ordinary paragraph\n>     App tasks may be created by default.\n",
+        )
+        blank_code_cases = (
+            "ordinary paragraph\n\n      App tasks may be created by default.\n",
+            "- ordinary paragraph\n\n      App tasks may be created by default.\n",
+            "> ordinary paragraph\n>\n>     App tasks may be created by default.\n",
+        )
+
+        for case in open_cases:
+            with self.subTest(kind="open", case=case):
+                normalized, diagnostics = (
+                    VALIDATOR._container_normalized_lines_with_diagnostics(case)
+                )
+                self.assertEqual(diagnostics, [])
+                self.assertTrue(
+                    any(
+                        getattr(line, "paragraph_continuation", False)
+                        for line in normalized
+                    )
+                )
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + case,
+                        self.references,
+                        self.ui,
+                    )
+                )
+
+                link_case = case.replace(
+                    "App tasks may be created by default.",
+                    "[Nested](model-routing.md)",
+                )
+                self.assertEqual(
+                    VALIDATOR.extract_local_markdown_targets(link_case),
+                    ["model-routing.md"],
+                )
+                link_map = dict(self.references)
+                link_map["workflow.md"] += link_case
+                with self.assertRaises(AssertionError):
+                    self.assertEqual(
+                        VALIDATOR.reference_topology_violations(
+                            self.skill, link_map, SKILL_PATH
+                        ),
+                        [],
+                    )
+
+                raw_case = case.replace(
+                    "App tasks may be created by default.",
+                    "<h2>Extra</h2>",
+                )
+                raw_scan = VALIDATOR._scan_rendered_markdown_details(raw_case)
+                self.assertTrue(
+                    any("raw HTML heading" in item for item in raw_scan.diagnostics)
+                )
+                self.assertTrue(
+                    VALIDATOR.task_contract_violations(
+                        self.references["task-contract.md"] + "\n\n" + raw_case
+                    )
+                )
+
+                heading_case = case.replace(
+                    "App tasks may be created by default.",
+                    "## Extra",
+                )
+                self.assertEqual(
+                    VALIDATOR.task_contract_violations(
+                        self.references["task-contract.md"] + "\n\n" + heading_case
+                    ),
+                    [],
+                )
+
+        for case in blank_code_cases:
+            with self.subTest(kind="blank-code", case=case):
+                normalized, diagnostics = (
+                    VALIDATOR._container_normalized_lines_with_diagnostics(case)
+                )
+                self.assertEqual(diagnostics, [])
+                self.assertTrue(
+                    any(getattr(line, "indented_code", False) for line in normalized)
+                )
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + case,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
+                link_case = case.replace(
+                    "App tasks may be created by default.",
+                    "[Nested](model-routing.md)",
+                )
+                self.assertEqual(
+                    VALIDATOR.extract_local_markdown_targets(link_case), []
+                )
+                raw_case = case.replace(
+                    "App tasks may be created by default.",
+                    "<h2>Extra</h2>",
+                )
+                self.assertEqual(
+                    VALIDATOR._scan_rendered_markdown_details(raw_case).diagnostics,
+                    [],
+                )
+                self.assertEqual(
+                    VALIDATOR.task_contract_violations(
+                        self.references["task-contract.md"] + "\n\n" + raw_case
+                    ),
+                    [],
+                )
+
+    def test_markdown_reference_path_suffixes_fail_closed(self) -> None:
+        suffixes = (
+            "model-routing.md/",
+            "model-routing.md%2F",
+            "sub/../model-routing.md/",
+        )
+        for suffix in suffixes:
+            with self.subTest(suffix=suffix):
+                normalized, diagnostic = VALIDATOR._normalize_markdown_target_details(
+                    suffix
+                )
+                self.assertEqual(normalized, "model-routing.md")
+                self.assertIsNotNone(diagnostic)
+                scan = VALIDATOR._scan_rendered_markdown_details(f"[nested]({suffix})")
+                self.assertEqual(scan.targets, ["model-routing.md"])
+                self.assertTrue(
+                    any("file-shaped path suffix" in item for item in scan.diagnostics)
+                )
+                reference_map = dict(self.references)
+                reference_map["workflow.md"] += f"\n[nested]({suffix})\n"
+                with self.assertRaises(AssertionError):
+                    self.assertEqual(
+                        VALIDATOR.reference_topology_violations(
+                            self.skill, reference_map, SKILL_PATH
+                        ),
+                        [],
+                    )
+
+        self.assertEqual(
+            VALIDATOR._scan_rendered_markdown_details(
+                "[external](https://example.com/model-routing.md/)\n"
+                "[mail](mailto:docs@example.com)"
+            ).diagnostics,
+            [],
+        )
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(
+                self.skill, self.references, SKILL_PATH
+            ),
+            [],
+        )
+
     def test_semantic_rendered_masking_and_linear_connector_chain(self) -> None:
         hidden = (
             "```text\nApp tasks may be created by default.\nApp tasks are opt-out rather than opt-in.\n```",
