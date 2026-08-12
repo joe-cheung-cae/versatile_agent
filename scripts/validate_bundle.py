@@ -273,10 +273,12 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     if begin_index >= end_index or not flags[begin_index] or not flags[end_index]:
         return [f"{filename} canonical block markers must be unindented and unmasked"]
     section = CANONICAL_SECTIONS[filename]
-    all_section_indexes = [i for i, line in enumerate(lines[:begin_index]) if line == section]
+    all_section_indexes = [i for i, line in enumerate(lines) if line == section]
     active_section_indexes = [i for i in all_section_indexes if flags[i]]
-    if all_section_indexes != active_section_indexes or len(active_section_indexes) != 1:
+    if len(all_section_indexes) != 1 or len(active_section_indexes) != 1:
         return [f"{filename} canonical block requires exactly one active, unmasked {section} section"]
+    if active_section_indexes[0] >= begin_index:
+        return [f"{filename} canonical block section must precede its begin marker"]
     actual = tuple(lines[begin_index + 1 : end_index])
     if actual != expected:
         errors.append(f"{filename} canonical block contents drifted")

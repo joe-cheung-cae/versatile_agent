@@ -88,6 +88,23 @@ class SkillContractTests(unittest.TestCase):
             candidate = mutated(self.skill, begin, begin + "\n" + unsafe)
             self.assert_semantic_rejects(candidate)
 
+    def test_canonical_sections_are_unique_across_the_whole_document(self) -> None:
+        skill_section = VALIDATOR.CANONICAL_SECTIONS["SKILL.md"]
+        self.assert_semantic_rejects(self.skill + "\n" + skill_section + "\n")
+
+        routing_section = VALIDATOR.CANONICAL_SECTIONS["model-routing.md"]
+        references = dict(self.references)
+        references["model-routing.md"] = self.routing + "\n" + routing_section + "\n"
+        self.assert_semantic_rejects(self.skill, references)
+
+        moved_skill = self.skill.replace(skill_section + "\n", "", 1)
+        moved_skill = moved_skill.replace(
+            VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][0],
+            VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][0] + "\n" + skill_section,
+            1,
+        )
+        self.assert_semantic_rejects(moved_skill)
+
     def test_registered_routing_block_is_complete(self) -> None:
         for clause in VALIDATOR.CANONICAL_BLOCKS["model-routing.md"][2]:
             references = dict(self.references)
