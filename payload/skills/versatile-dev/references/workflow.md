@@ -80,3 +80,21 @@ Stop autonomous iteration when:
 - the requested runtime/model cannot be verified and no declared fallback is
   safe;
 - verification cannot distinguish a correct change from a false positive.
+
+## Offline forward helper
+
+After the parent has explicitly classified a closed task packet, the shipped
+`payload/skills/versatile-dev/scripts/forward_router.py` may be used for a
+deterministic offline plan or full route-document replay:
+
+```text
+python3 payload/skills/versatile-dev/scripts/forward_router.py plan -
+python3 payload/skills/versatile-dev/scripts/forward_router.py replay PACKET.json ROUTE.json
+```
+
+The helper validates canonical packet hashes, repository-relative paths, writer
+ownership, and closed role choices. It never classifies English, spawns a
+native agent, authenticates or probes, creates an App task, or promotes
+configured/App facts to native effective evidence. Replay requires the full
+closed route document and replays the offline route helper; native spawn and
+App actions remain parent Skill authority.

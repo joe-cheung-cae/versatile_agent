@@ -2,7 +2,7 @@
   "cases": {
     "simple": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "task_packet_hash": "sha256:f0601013a90f7b6f6b1510b706e1d62be305e946d5488f3f33886e3416f35f8d",
       "task_kind": "simple",
       "request": "Update one local unit test and verify the focused command.",
       "files": ["tests/test_local.py"],
@@ -15,7 +15,7 @@
     },
     "docs": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "task_packet_hash": "sha256:2fba4f907f2e5bcd93d1aafb631e39c4ec90c9431d9a107f4f2c6956faa61296",
       "task_kind": "docs",
       "request": "Answer a bounded vendor API question from official documentation.",
       "files": ["notes/vendor-api.md"],
@@ -28,7 +28,7 @@
     },
     "cuda": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "task_packet_hash": "sha256:f7b84c4043a209c5123d2784c7fa446cc5d301af2856eb9496fff8da74f19561",
       "task_kind": "cuda",
       "request": "Review a CUDA kernel launch and memory synchronization change.",
       "files": ["src/kernel.cu"],
@@ -41,7 +41,7 @@
     },
     "numerical": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "task_packet_hash": "sha256:c5a31eb12001ff019431da39a3ff03b75dc2bc59e3fed9c45e00c4ba4bad03bb",
       "task_kind": "numerical",
       "request": "Review a solver stability and conservation change.",
       "files": ["src/solver.py"],
@@ -54,7 +54,7 @@
     },
     "security": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "task_packet_hash": "sha256:328198d22e8805893fde9749163c689c92064aad67033acadac2871e49b734f5",
       "task_kind": "security",
       "request": "Trace untrusted input to a privileged filesystem sink.",
       "files": ["src/auth.py"],
@@ -67,14 +67,29 @@
     },
     "shared_writers": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "task_packet_hash": "sha256:0af290805ff19bd9ed2807151cf951bc50424870d41b07de9dc427af881bd6fd",
       "task_kind": "simple",
-      "request": "Make a bounded change with one shared implementation file and one independent test file.",
-      "files": ["src/shared.py", "tests/test_shared.py"],
+      "request": "Make a bounded change with one shared implementation file and one shared test file.",
+      "files": ["src/shared.py", "tests/test_shared.py", "tests/test_disjoint.py"],
       "writers": [
-        {"writer_id": "implementer", "files": ["src/shared.py"]},
-        {"writer_id": "tester", "files": ["tests/test_shared.py"]},
-        {"writer_id": "performance_profiler", "files": ["src/shared.py"]}
+        {"writer_id": "implementer", "files": ["src/shared.py", "tests/test_shared.py"]},
+        {"writer_id": "tester", "files": ["tests/test_shared.py"]}
+      ],
+      "app_task": {
+        "requested": false,
+        "current_request_authorized": false,
+        "configured_route": "unknown"
+      }
+    },
+    "disjoint_writers": {
+      "schema_version": 1,
+      "task_packet_hash": "sha256:1cd1c766a783b2db533952feabde373ee4672cd584c8c547c80c5ddf240a9a8d",
+      "task_kind": "simple",
+      "request": "Make a bounded change with disjoint implementation and test files.",
+      "files": ["src/disjoint.py", "tests/test_disjoint.py"],
+      "writers": [
+        {"writer_id": "implementer", "files": ["src/disjoint.py"]},
+        {"writer_id": "tester", "files": ["tests/test_disjoint.py"]}
       ],
       "app_task": {
         "requested": false,
@@ -84,7 +99,7 @@
     },
     "app_unauthorized": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "task_packet_hash": "sha256:a7f0a7820e63211c6f9d69cf8f251fda6f52a094b4d3e46566c376d0c7cc074a",
       "task_kind": "simple",
       "request": "Create a user-visible App task for this request.",
       "files": [],
@@ -97,7 +112,7 @@
     },
     "app_authorized": {
       "schema_version": 1,
-      "task_packet_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "task_packet_hash": "sha256:89c673db0fa64fa086fd87c9bf81b54209e162e06a9900d00cf87297a94a6d46",
       "task_kind": "simple",
       "request": "Create a user-visible App task for this request.",
       "files": [],

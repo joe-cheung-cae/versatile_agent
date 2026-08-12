@@ -11,9 +11,15 @@ contacts the network, or infers native effective metadata.
 
 from __future__ import annotations
 
+import argparse
 import copy
+import hashlib
 import importlib.util
+import json
+import posixpath
 import re
+import sys
+import unicodedata
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +62,8 @@ PACKET_FIELDS = {
 }
 APP_TASK_FIELDS = {"requested", "current_request_authorized", "configured_route"}
 WRITER_FIELDS = {"writer_id", "files"}
+WRITABLE_ROLES = frozenset({"implementer", "tester"})
+TEST_PATH_PREFIX = "tests/"
 TOKEN_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
 HASH_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -69,6 +77,8 @@ def _error(location: str, message: str) -> ForwardRouteError:
 
 
 def _check_fields(value: dict[str, Any], allowed: set[str], required: set[str], location: str) -> None:
+    if any(not isinstance(key, str) for key in value):
+        raise _error(location, "member names must be strings")
     extra = [key for key in value if key not in allowed]
     if extra:
         raise _error(location, f"unsupported fields: {sorted(repr(key) for key in extra)}")
@@ -80,8 +90,16 @@ def _check_fields(value: dict[str, Any], allowed: set[str], required: set[str], 
 def _require_string(value: Any, location: str, *, token: bool = False) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise _error(location, "must be a non-empty canonical string")
-    if any(ord(character) < 0x20 for character in value):
+    if any(
+        ord(character) < 0x20
+        or ord(character) == 0x7F
+        or unicodedata.category(character) in {"Cc", "Cf"}
+        or character in {"\u2028", "\u2029"}
+        for character in value
+    ):
         raise _error(location, "must not contain control characters")
+    if any(0xD800 <= ord(character) <= 0xDFFF for character in value):
+        raise _error(location, "must not contain unpaired surrogates")
     if token and (value == "unknown" or TOKEN_RE.fullmatch(value) is None):
         raise _error(location, "must be a canonical token")
     return value
@@ -93,18 +111,33 @@ def _require_bool(value: Any, location: str) -> bool:
     return value
 
 
-def _canonical_string_list(value: Any, location: str, *, allow_empty: bool = True) -> list[str]:
+def _canonical_repo_path(value: Any, location: str) -> str:
+    path = _require_string(value, location)
+    if path.startswith("/") or "\\" in path:
+        raise _error(location, "must be a relative POSIX path")
+    if unicodedata.normalize("NFC", path) != path:
+        raise _error(location, "must use canonical Unicode normalization")
+    if posixpath.normpath(path) != path:
+        raise _error(location, "must not contain normalization aliases")
+    segments = path.split("/")
+    if any(segment in {"", ".", ".."} for segment in segments):
+        raise _error(location, "must not contain empty, dot, or dotdot segments")
+    return path
+
+
+def _canonical_path_list(value: Any, location: str, *, allow_empty: bool = True) -> list[str]:
     if not isinstance(value, list):
         raise _error(location, "must be a list")
     if not allow_empty and not value:
         raise _error(location, "must not be empty")
-    result = [_require_string(item, f"{location}[{index}]", token=True) for index, item in enumerate(value)]
+    result = [_canonical_repo_path(item, f"{location}[{index}]") for index, item in enumerate(value)]
     if len(result) != len(set(result)):
         raise _error(location, "must not contain duplicate entries")
     return result
 
-def validate_packet(packet: Any) -> dict[str, Any]:
-    """Validate one closed task packet without adding or inferring facts."""
+
+def _validate_packet_shape(packet: Any) -> dict[str, Any]:
+    """Validate packet structure and return a defensive copy before hash checking."""
 
     if not isinstance(packet, dict):
         raise _error("packet", "must be an object")
@@ -118,7 +151,8 @@ def validate_packet(packet: Any) -> dict[str, Any]:
     if task_kind not in TASK_KINDS:
         raise _error("packet.task_kind", f"unsupported task kind: {task_kind}")
     _require_string(packet["request"], "packet.request")
-    _canonical_string_list(packet["files"], "packet.files")
+    packet_files = _canonical_path_list(packet["files"], "packet.files")
+    packet_file_set = set(packet_files)
 
     writers = packet["writers"]
     if not isinstance(writers, list):
@@ -132,8 +166,16 @@ def validate_packet(packet: Any) -> dict[str, Any]:
         writer_id = _require_string(writer["writer_id"], f"{location}.writer_id", token=True)
         if writer_id in writer_ids:
             raise _error(f"{location}.writer_id", "must be unique")
+        if writer_id not in WRITABLE_ROLES:
+            raise _error(f"{location}.writer_id", "is not a writable forward role")
         writer_ids.add(writer_id)
-        _canonical_string_list(writer["files"], f"{location}.files", allow_empty=False)
+        writer_files = _canonical_path_list(writer["files"], f"{location}.files", allow_empty=False)
+        if not set(writer_files).issubset(packet_file_set):
+            raise _error(f"{location}.files", "must be exact members of packet.files")
+        if writer_id == "tester" and any(
+            not path.startswith(TEST_PATH_PREFIX) for path in writer_files
+        ):
+            raise _error(f"{location}.files", "tester ownership is limited to tests/")
 
     app_task = packet["app_task"]
     if not isinstance(app_task, dict):
@@ -150,7 +192,46 @@ def validate_packet(packet: Any) -> dict[str, Any]:
             "packet.app_task.current_request_authorized",
             "cannot be true when no App task was requested",
         )
-    return packet
+    return copy.deepcopy(packet)
+
+
+def _canonical_packet_json_from_validated(packet: dict[str, Any]) -> str:
+    content = copy.deepcopy(packet)
+    content.pop("task_packet_hash")
+    return json.dumps(
+        content,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+
+
+def canonical_packet_json(packet: Any) -> str:
+    """Return canonical packet JSON with the claimed hash member excluded."""
+
+    return _canonical_packet_json_from_validated(_validate_packet_shape(packet))
+
+
+def canonical_packet_hash(packet: Any) -> str:
+    """Return the deterministic SHA-256 hash of canonical packet content."""
+
+    encoded = canonical_packet_json(packet).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def validate_packet(packet: Any) -> dict[str, Any]:
+    """Validate one closed task packet, including its claimed canonical hash."""
+
+    validated = _validate_packet_shape(packet)
+    if validated["task_packet_hash"] != _canonical_packet_hash_from_validated(validated):
+        raise _error("packet.task_packet_hash", "does not match canonical packet content")
+    return copy.deepcopy(validated)
+
+
+def _canonical_packet_hash_from_validated(packet: dict[str, Any]) -> str:
+    encoded = _canonical_packet_json_from_validated(packet).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
 
 
 def _writer_batches(writers: list[dict[str, Any]]) -> list[list[str]]:
@@ -237,24 +318,69 @@ def plan_forward(packet: Any) -> dict[str, Any]:
     }
 
 
-def forward_route(packet: Any, route_state: Any) -> dict[str, Any]:
-    """Apply an existing route-helper state to a docs forward plan.
+def _reject_json_constant(value: str) -> None:
+    raise ForwardRouteError("non-finite JSON numbers are not allowed")
 
-    The route helper owns evidence classification.  This adapter only permits
-    the already-classified ``FALLBACK_PENDING`` state to select one Terra
-    attempt and otherwise preserves terminal/no-fallback states.
+
+def _reject_duplicate_json_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ForwardRouteError("duplicate JSON member")
+        result[key] = value
+    return result
+
+
+def load_json(path: str | Path) -> Any:
+    """Load strict UTF-8 JSON with duplicate-member rejection."""
+
+    try:
+        raw = sys.stdin.buffer.read() if str(path) == "-" else Path(path).read_bytes()
+        source = raw.decode("utf-8", errors="strict")
+        return json.loads(
+            source,
+            object_pairs_hook=_reject_duplicate_json_members,
+            parse_constant=_reject_json_constant,
+        )
+    except UnicodeDecodeError as exc:
+        raise _error("input", "invalid UTF-8") from exc
+    except json.JSONDecodeError as exc:
+        raise _error("input", "invalid JSON") from exc
+
+
+def _replay_route_document(route_document: Any, task_packet_hash: str) -> dict[str, Any]:
+    if not isinstance(route_document, dict):
+        raise _error("route_document", "must be the full route document object")
+    if set(route_document) != route_research.TOP_LEVEL_FIELDS:
+        raise _error("route_document", "must contain the full closed route-document schema")
+    if route_document.get("task_packet_hash") != task_packet_hash:
+        raise _error("route_document.task_packet_hash", "must equal the packet hash")
+    try:
+        state = route_research.decide(copy.deepcopy(route_document))
+    except (route_research.RouteResearchError, route_research.runtime_records.RuntimeRecordError) as exc:
+        raise _error("route_document", "failed closed route replay") from exc
+    if state.get("task_packet_hash") != task_packet_hash:
+        raise _error("route_document.task_packet_hash", "replay returned a mismatched packet hash")
+    return state
+
+
+def forward_route(packet: Any, route_document: Any) -> dict[str, Any]:
+    """Replay a full route document and adapt its closed state to a forward plan.
+
+    The route helper owns evidence classification.  This adapter never accepts
+    a caller-built summary state; it only permits the replayed
+    ``FALLBACK_PENDING`` state to select one Terra attempt and otherwise
+    preserves terminal/no-fallback states.
     """
 
-    plan = plan_forward(packet)
+    validated_packet = validate_packet(packet)
+    plan = plan_forward(validated_packet)
     if plan["task_kind"] != "docs":
-        raise _error("route_state", "route handoff is only valid for docs tasks")
-    if not isinstance(route_state, dict):
-        raise _error("route_state", "must be an object")
-    if route_state.get("task_packet_hash") != plan["task_packet_hash"]:
-        raise _error("route_state.task_packet_hash", "must equal the task packet hash")
+        raise _error("route_document", "route handoff is only valid for docs tasks")
+    route_state = _replay_route_document(route_document, plan["task_packet_hash"])
     state = route_state.get("state")
     if state not in route_research.TERMINAL_STATES | {route_research.STATE_FALLBACK_PENDING}:
-        raise _error("route_state.state", "must be terminal or FALLBACK_PENDING")
+        raise _error("route_document.state", "must be terminal or FALLBACK_PENDING")
 
     result = copy.deepcopy(plan)
     result["handoff"] = None
@@ -278,3 +404,43 @@ def forward_route(packet: Any, route_state: Any) -> dict[str, Any]:
     result["selected_agents"] = []
     result["next_action"] = "none"
     return result
+
+
+def canonical_json(value: Any) -> str:
+    """Serialize one CLI result with stable ordering and no non-finite values."""
+
+    return json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True, allow_nan=False) + "\n"
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Plan and replay the closed offline Skill forward contract")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    plan_parser = subparsers.add_parser("plan", help="plan one classified packet; use '-' for stdin")
+    plan_parser.add_argument("packet", nargs="?", default="-")
+    replay_parser = subparsers.add_parser(
+        "replay",
+        help="replay one full route document for one packet",
+    )
+    replay_parser.add_argument("packet")
+    replay_parser.add_argument("route_document")
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    try:
+        if args.command == "plan":
+            result = plan_forward(load_json(args.packet))
+        elif args.command == "replay":
+            result = forward_route(load_json(args.packet), load_json(args.route_document))
+        else:
+            raise _error("command", "unsupported command")
+        sys.stdout.write(canonical_json(result))
+        return 0
+    except (OSError, ForwardRouteError) as exc:
+        print(f"forward-router error: {exc}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
