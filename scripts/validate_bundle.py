@@ -215,7 +215,12 @@ def _fence_close(line: str, fence: tuple[str, int]) -> bool:
     return re.fullmatch(rf"[ ]{{0,3}}{re.escape(marker)}{{{length},}}\s*", line) is not None
 
 
-def _source_flags(text: str, marker_lines: set[str] | None = None) -> list[bool]:
+def _source_flags(
+    text: str,
+    marker_lines: set[str] | None = None,
+    *,
+    mask_inline_code: bool = True,
+) -> list[bool]:
     """Mark only unindented, unquoted, unmasked source lines as active."""
     marker_lines = marker_lines or set()
     flags: list[bool] = []
@@ -248,7 +253,7 @@ def _source_flags(text: str, marker_lines: set[str] | None = None) -> list[bool]
                 comment = False
             continue
         container = bool(re.match(r"^(?:[ \t]+|>\s*|(?:[-+*]|\d+\.)\s+)", line))
-        inline_code = any(
+        inline_code = mask_inline_code and any(
             char == "`"
             and (len(line[:index]) - len(line[:index].rstrip("\\"))) % 2 == 0
             for index, char in enumerate(line)
@@ -303,10 +308,11 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     section_index = active_section_indexes[0]
     if section_index >= begin_index:
         return [f"{filename} canonical block section must precede its begin marker"]
+    peer_flags = _source_flags(text, marker_lines, mask_inline_code=False)
     peer_headings = [
         i
         for i, line in enumerate(lines)
-        if flags[i] and re.fullmatch(r"#{1,2}(?:$|[ \t]+.*)", line)
+        if peer_flags[i] and re.fullmatch(r"#{1,2}(?:$|[ \t]+.*)", line)
     ]
     next_peer = next((i for i in peer_headings if i > section_index), None)
     if next_peer is not None and end_index >= next_peer:
@@ -496,6 +502,12 @@ def task_contract_violations(text: str) -> list[str]:
         errors.append("task-contract.md H2 headings must be exactly the five ordered contract sections")
     if any(level != 1 and level != 2 for level, _, _ in headings):
         errors.append("task-contract.md must not contain any H3-H6 heading")
+    expected_sequence = [(1, "Subagent task contract")] + [
+        (2, heading.removeprefix("## ")) for heading in expected_h2
+    ]
+    actual_sequence = [(level, title) for level, title, _ in headings]
+    if actual_sequence != expected_sequence:
+        errors.append("task-contract.md root heading sequence must be the H1 followed by the five ordered H2 sections")
     for index in range(1, len(lines)):
         prefix, content = _source_prefix_parts(lines[index])
         if not re.fullmatch(r"(?:=+|-+)[ \t]*", content):

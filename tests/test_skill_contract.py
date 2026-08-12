@@ -127,6 +127,22 @@ class SkillContractTests(unittest.TestCase):
         self.assert_semantic_rejects(
             self.skill.replace("<!-- BEGIN versatile-dev canonical contract -->", "## Inserted peer\n<!-- BEGIN versatile-dev canonical contract -->", 1)
         )
+        for peer in ("## Peer `code`", "# Peer `code`"):
+            self.assert_semantic_rejects(
+                self.skill.replace("## Contract\n", "## Contract\n" + peer + "\n", 1)
+            )
+            routing_candidate = self.routing.replace(
+                "## Canonical routing contract\n",
+                "## Canonical routing contract\n" + peer + "\n",
+                1,
+            )
+            references = dict(self.references)
+            references["model-routing.md"] = routing_candidate
+            self.assert_semantic_rejects(self.skill, references)
+        fenced_peer = self.skill.replace("## Contract\n", "## Contract\n```\n## Peer `code`\n```\n", 1)
+        self.assertEqual(VALIDATOR.semantic_contract_violations(fenced_peer, self.references, self.ui), [])
+        commented_peer = self.skill.replace("## Contract\n", "## Contract\n<!--\n## Peer `code`\n-->\n", 1)
+        self.assert_semantic_rejects(commented_peer)
         empty_peers = ("#", "##", "#   ", "##\t")
         for peer in empty_peers:
             skill_candidate = self.skill.replace(
@@ -325,6 +341,11 @@ class SkillContractTests(unittest.TestCase):
         self.assertTrue(VALIDATOR.task_contract_violations(wrong))
         wrong = self.task.replace("## 5. Verification/handoff", "## 4. Constraints/requirements", 1)
         self.assertTrue(VALIDATOR.task_contract_violations(wrong))
+        h1 = "# Subagent task contract\n"
+        moved_after = self.task.replace(h1, "", 1) + "\n" + h1
+        moved_between = self.task.replace(h1, "", 1).replace("## 3. Inputs/evidence\n", h1 + "## 3. Inputs/evidence\n", 1)
+        self.assertTrue(VALIDATOR.task_contract_violations(moved_after))
+        self.assertTrue(VALIDATOR.task_contract_violations(moved_between))
 
     def test_openai_yaml_is_a_strict_closed_schema(self) -> None:
         self.assertEqual(VALIDATOR.openai_yaml_violations(self.ui), [])
