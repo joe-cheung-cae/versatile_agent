@@ -232,12 +232,100 @@ class SkillContractTests(unittest.TestCase):
                 "A probe cannot establish the native effective route.",
                 "Do not spawn all specialists by default.",
                 "The App task cannot be created without explicit authorization.",
+                "Content failures never authorize Terra fallback.",
+                "Content failures authorize no Terra fallback.",
+                "Terra fallback is not authorized by content failures.",
+                "The manifest does not prove the effective route.",
+                "The effective route is not proven by the manifest.",
+                "This Skill does not switch the parent model.",
+                "The parent model is not switched by this Skill.",
             )
         )
         self.assertEqual(
             VALIDATOR.semantic_contract_violations(negated, self.references, self.ui),
             [],
         )
+
+    def test_validator_polarity_matrix(self) -> None:
+        rejected = (
+            "Content failures authorize Terra fallback.",
+            "Terra fallback is authorized by content failures.",
+            "The installation manifest proves the effective native route.",
+            "The effective native route is proven by the installation manifest.",
+            "This Skill switches the parent model.",
+            "The parent model is switched by this Skill.",
+            "The App task cannot be created without explicit authorization, but content failures authorize Terra fallback.",
+        )
+        for addition in rejected:
+            with self.subTest(sentence=addition):
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    addition,
+                )
+
+        accepted = (
+            "Content failures never authorize Terra fallback.",
+            "Content failures authorize no Terra fallback.",
+            "Terra fallback is not authorized by content failures.",
+            "The manifest does not prove the effective route.",
+            "The effective route is not proven by the manifest.",
+            "This Skill does not switch the parent model.",
+            "The parent model is not switched by this Skill.",
+        )
+        for addition in accepted:
+            with self.subTest(sentence=addition):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
+
+    def test_app_authorization_exception_matrix(self) -> None:
+        rejected = (
+            "Authorization from an earlier request is also acceptable.",
+            "Prior request authorization is sufficient for App tasks.",
+            "App tasks accept previous request authorization.",
+            "Unless previously authorized, create an App task.",
+            "Implied consent is sufficient for App tasks.",
+            "App task creation accepts implied consent.",
+            "Current-request authorization is optional.",
+            "Current-request authorization may be omitted.",
+            "App task may be created without explicit authorization.",
+        )
+        for addition in rejected:
+            with self.subTest(sentence=addition):
+                self.assertTrue(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    addition,
+                )
+
+        accepted = (
+            "Earlier authorization is not sufficient.",
+            "Implied consent is not accepted.",
+            "Current-request authorization is not optional.",
+            "The App task cannot be created without explicit authorization.",
+        )
+        for addition in accepted:
+            with self.subTest(sentence=addition):
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        self.skill + "\n" + addition,
+                        self.references,
+                        self.ui,
+                    ),
+                    [],
+                )
 
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
@@ -346,13 +434,19 @@ class SkillContractTests(unittest.TestCase):
 
         packet = self.references["task-contract.md"]
         packet_mutations = (
-            packet + "\n## 6. Extra\n",
+            packet + "\n## Extra\n",
+            packet + "\n### 6 Extra\n",
+            packet + "\nSetext heading\n---\n",
             packet.replace("## 2. Ownership", "## 1. Duplicate\n\n## 2. Ownership"),
             packet.replace("## 3. Inputs/evidence", "## 4. Constraints/requirements\n\n## 3. Inputs/evidence"),
         )
         for mutation in packet_mutations:
             with self.subTest(packet=mutation), self.assertRaises(AssertionError):
                 self.assertEqual(VALIDATOR.task_contract_violations(mutation), [])
+        self.assertEqual(
+            VALIDATOR.task_contract_violations(packet + "\n- ordinary packet detail\n"),
+            [],
+        )
 
 
 if __name__ == "__main__":

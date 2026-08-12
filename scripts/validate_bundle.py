@@ -85,10 +85,9 @@ TASK_CONTRACT_HEADINGS = (
 )
 INLINE_MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(\s*(?:<([^>]+)>|([^\s)]+))")
 REFERENCE_DEFINITION_RE = re.compile(r"(?m)^[ \t]{0,3}\[[^\]]+\]:[ \t]*(?:<([^>\n]+)>|(\S+))")
-NUMBERED_HEADING_RE = re.compile(r"(?m)^#{1,6}[ \t]+\d+\.[ \t]+.+?[ \t]*$")
-CONTRACT_NEGATION_RE = re.compile(
-    r"\b(?:not|never|no|cannot|can't|doesn't|does not|do not|don't|without|must not|should not)\b"
-)
+ATX_CONTRACT_SECTION_RE = re.compile(r"(?m)^#{2,3}[ \t]+[^\n]+?[ \t]*$")
+SETEXT_HEADING_RE = re.compile(r"(?m)^[^\n]+\n[ \t]*(?:=+|-+)[ \t]*(?=\n|$)")
+CONTRACT_CLAUSE_SPLIT_RE = re.compile(r"(?:[.!?;:]+(?=\s|$)|\b(?:but|however|although)\b)")
 
 
 def _normalize_contract_text(text: str) -> str:
@@ -98,113 +97,167 @@ def _normalize_contract_text(text: str) -> str:
     return re.sub(r"\s+", " ", normalized).strip()
 
 
-def _positive_contract_match(text: str, pattern: re.Pattern[str]) -> re.Match[str] | None:
-    """Find a positive contradiction while ignoring nearby explicit negation."""
+def _contract_clauses(text: str) -> list[str]:
+    """Split normalized prose at sentence and adversative clause boundaries."""
 
-    for match in pattern.finditer(text):
-        context_start = max(0, match.start() - 140)
-        context = text[context_start : match.start()]
-        context = re.split(r"[.!?;]", context)[-1]
-        action_prefix = match.group(0)
-        action_match = re.search(
-            r"\b(?:authorize|authorizes|trigger|triggers|permit|permits|allow|allows|allowed|enable|enables|change|changes|switch|switches|control|controls|override|overrides|prove|proves|establish|establishes|demonstrate|demonstrates|confirm|confirms|guarantee|guarantees|ensure|ensures|provide|provides|create|creates|created|creating)\b",
-            action_prefix,
-        )
-        if action_match:
-            action_prefix = action_prefix[: action_match.start()]
-            negated = CONTRACT_NEGATION_RE.search(context) or CONTRACT_NEGATION_RE.search(action_prefix)
-        else:
-            negated = CONTRACT_NEGATION_RE.search(context)
-        if negated:
-            continue
-        return match
-    return None
+    normalized = _normalize_contract_text(text)
+    return [clause.strip() for clause in CONTRACT_CLAUSE_SPLIT_RE.split(normalized) if clause.strip()]
 
 
-CONTRACT_CONTRADICTION_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+FAILURE_KIND = r"(?:content|tool|task|timeout|unknown(?:[-\s]+exception)?)"
+FAILURE_SOURCE = (
+    rf"{FAILURE_KIND}(?:[ ,/&]+(?:and\s+)?{FAILURE_KIND}){{0,4}}"
+    r"(?:\s+(?:failure|failures|error|errors|outcome|outcomes|exception|exceptions))?"
+)
+ROUTING_ACTION = r"(?:authorize|authorizes|authorizing|trigger|triggers|triggering|permit|permits|permitting|allow|allows|allowing|enable|enables|enabling)"
+ROUTING_TARGET = r"(?:terra(?:\s+fallback)?|fallback)"
+PASSIVE_ROUTING_ACTION = r"(?:authorized|triggered|permitted|allowed|enabled)"
+ROUTE_EVIDENCE = r"(?:the\s+)?(?:installation\s+manifest|manifest|probe)"
+EFFECTIVE_ROUTE = r"(?:the\s+)?(?:effective\s+)?(?:native\s+)?route"
+AUTOMATIC_CLI = r"automatic\s+cli\s+(?:routing|fallback|model\s+switch(?:ing)?)"
+
+
+# Each rule has positive forms and explicit local negation guards. Matching is
+# clause-local; a negation in one sentence cannot suppress a contradiction in a
+# later sentence.
+CONTRACT_CONTRADICTION_RULES: tuple[
+    tuple[str, tuple[re.Pattern[str], ...], tuple[re.Pattern[str], ...]], ...
+] = (
     (
         "App task may bypass current-request authorization",
-        re.compile(
-            r"(?:\bapp(?:\s+user-visible)?\s+tasks?\b.{0,100}\b(?:requires?|needs?|need)\s+no\s+(?:explicit\s+)?authori[sz]ation\b|\bno\s+(?:explicit\s+)?authori[sz]ation\s+(?:is\s+)?required\b.{0,100}\bapp(?:\s+user-visible)?\s+tasks?\b)"
+        (
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:require|requires|need|needs)\s+no\s+(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\bno\s+(?:explicit\s+)?authori[sz]ation\s+(?:is\s+)?required\s+for\s+app(?:\s+user-visible)?\s+tasks?\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:do\s+not|don't|never)\s+require\s+(?:any\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\b(?:create|creating)\s+(?:an?\s+)?app(?:\s+user-visible)?\s+task\b[^.!?;:]{0,80}\bwithout\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:may|can|will|is|are)\s+(?:be\s+)?created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}\b(?:may|can|will)\s+(?:be\s+)?created[^.!?;:]{0,40}\bby\s+default\b"),
+        ),
+        (
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+cannot\s+be\s+created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+(?:must|should)\s+not\s+be\s+created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
         ),
     ),
     (
         "App task accepts prior or implicit authorization",
-        re.compile(
-            r"(?:\b(?:prior|previous|earlier|past)\s+authori[sz]ation\b.{0,100}\b(?:is\s+enough|is\s+sufficient|suffices|is\s+accepted)\b.{0,80}\b(?:app(?:\s+user-visible)?\s+tasks?|create|creating)\b|\b(?:prior|previous|earlier|past)\s+authori[sz]ation\b.{0,80}\b(?:app(?:\s+user-visible)?\s+tasks?|create|creating)\b.{0,100}\b(?:is\s+enough|is\s+sufficient|suffices|is\s+accepted)\b)"
+        (
+            re.compile(r"\bauthori[sz]ation\s+from\s+(?:an?\s+)?(?:prior|previous|earlier|past)\s+request\b\s+(?:is\s+)?(?:also\s+)?(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\b(?:prior|previous|earlier|past)\s+(?:user\s+)?request\s+authori[sz]ation\b\s+(?:is\s+)?(?:also\s+)?(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\b(?:prior|previous|earlier|past)\s+authori[sz]ation\b\s+(?:is\s+)?(?:also\s+)?(?:acceptable|accepted|sufficient|enough)\b[^.!?;:]{0,80}\b(?:app(?:\s+user-visible)?\s+tasks?|creat(?:e|ing))\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:accept|accepts|allow|allows|use|uses)\b[^.!?;:]{0,50}\b(?:prior|previous|earlier|past)\s+(?:request\s+)?authori[sz]ation\b"),
+            re.compile(r"\bunless\s+(?:(?:the\s+user\s+was)\s+)?(?:previously|prior|earlier)\s+authori[sz]ed\b"),
+            re.compile(r"\bunless\s+(?:a\s+)?(?:prior|previous|earlier)\s+request\s+authori[sz]ation\b"),
+            re.compile(r"\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b\s+(?:is\s+)?(?:also\s+)?(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b\s+(?:is\s+)?(?:allowed|permitted)\b"),
+            re.compile(r"\b(?:app\s+task\s+creation|app(?:\s+user-visible)?\s+tasks?)\b[^.!?;:]{0,60}\b(?:accept|accepts|allow|allows|may\s+use)\b[^.!?;:]{0,50}\b(?:implicit|implied)\s+(?:consent|authori[sz]ation)\b"),
+            re.compile(r"\bcurrent[-\s]+(?:user[-\s]+)?request\s+authori[sz]ation\b\s+(?:is\s+)?(?:optional|unnecessary)\b"),
+            re.compile(r"\b(?:current[-\s]+(?:user[-\s]+)?request\s+)?authori[sz]ation\b\s+(?:may|can)\s+be\s+omitted\b"),
+            re.compile(r"\b(?:may|can)\s+omit\s+(?:the\s+)?(?:current[-\s]+(?:user[-\s]+)?request\s+)?authori[sz]ation\b"),
         ),
-    ),
-    (
-        "App task accepts implicit authorization",
-        re.compile(
-            r"\b(?:implicit|implied)\s+authori[sz]ation\b.{0,100}\b(?:app(?:\s+user-visible)?\s+tasks?|create|creating)\b"
-        ),
-    ),
-    (
-        "App task may omit authorization",
-        re.compile(
-            r"(?:\bapp(?:\s+user-visible)?\s+tasks?\b.{0,100}\b(?:without|with\s+no)\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b|\b(?:without|with\s+no)\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b.{0,100}\bapp(?:\s+user-visible)?\s+tasks?\b)"
-        ),
-    ),
-    (
-        "App task may be created by default",
-        re.compile(
-            r"\bapp(?:\s+user-visible)?\s+tasks?\b.{0,100}\b(?:may|can|will)\s+(?:be\s+)?creat(?:e|ed|ing)\b.{0,40}\bby default\b"
+        (
+            re.compile(r"\b(?:prior|previous|earlier|past)\s+authori[sz]ation\s+is\s+not\s+(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\b(?:implicit|implied)\s+consent\s+is\s+not\s+(?:acceptable|accepted|sufficient|enough)\b"),
+            re.compile(r"\bcurrent[-\s]+(?:user[-\s]+)?request\s+authori[sz]ation\s+is\s+not\s+(?:optional|unnecessary)\b"),
         ),
     ),
     (
         "Non-routing failures may authorize Terra or fallback",
-        re.compile(
-            r"\b(?:content|tool|task|timeout|unknown(?:[-\s]+exception)?)(?:\s*(?:[/,&]|\band\b)\s*(?:content|tool|task|timeout|unknown(?:[-\s]+exception)?))*\s+(?:failure|failures|error|errors|outcome|outcomes|exception|exceptions)?\s*.{0,90}\b(?:authorize|authorizes|trigger|triggers|permit|permits|allow|allows|enable|enables)\b.{0,40}\b(?:terra|fallback)\b"
+        (
+            re.compile(rf"\b{FAILURE_SOURCE}\s+(?:may\s+)?{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
+            re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
+        ),
+        (
+            re.compile(rf"\b{FAILURE_SOURCE}\s+(?:never|does\s+not|do\s+not|cannot|can't)\s+{ROUTING_ACTION}\s+{ROUTING_TARGET}\b"),
+            re.compile(rf"\b{FAILURE_SOURCE}\s+{ROUTING_ACTION}\s+no\s+{ROUTING_TARGET}\b"),
+            re.compile(rf"\b{ROUTING_TARGET}\s+(?:is|are)\s+(?:not|never)\s+{PASSIVE_ROUTING_ACTION}\s+by\s+{FAILURE_SOURCE}\b"),
         ),
     ),
     (
         "Dual researchers or routing helper described as incomplete",
-        re.compile(
-            r"\b(?:dual[-\s]?(?:researcher|agent)s?|dual[-\s]?agent installer|docs_researcher_luna\s*(?:and|/)\s*docs_researcher_terra|(?:two|both)\s+(?:named\s+)?researchers?|route_research\.py|(?:route|routing)(?:[-\s]+research)?[-\s]+helper)\b.{0,120}\b(?:future|pending|not installed|not implemented|unimplemented|planned|later)\b"
+        (
+            re.compile(r"\b(?:dual[-\s]?(?:researcher|agent)s?|dual[-\s]?agent installer|docs_researcher_luna\s*(?:and|/)\s*docs_researcher_terra|(?:two|both)\s+(?:named\s+)?researchers?|route_research\.py|(?:route|routing)(?:[-\s]+research)?[-\s]+helper)\b[^.!?;:]{0,120}\b(?:future|pending|planned|later|unimplemented)\b"),
+            re.compile(r"\b(?:dual[-\s]?(?:researcher|agent)s?|dual[-\s]?agent installer|docs_researcher_luna\s*(?:and|/)\s*docs_researcher_terra|(?:two|both)\s+(?:named\s+)?researchers?|route_research\.py|(?:route|routing)(?:[-\s]+research)?[-\s]+helper)\b[^.!?;:]{0,80}\b(?:is|are)\s+not\s+(?:installed|implemented)\b"),
+        ),
+        (
+            re.compile(r"\b(?:dual[-\s]?(?:researcher|agent)s?|route_research\.py|(?:route|routing)(?:[-\s]+research)?[-\s]+helper)\b[^.!?;:]{0,80}\b(?:is|are)\s+not\s+(?:future|pending|planned)\b"),
         ),
     ),
     (
         "Legacy single-only researcher route described as current",
-        re.compile(r"(?:\blegacy\s+single(?:[-\s]+only)?\b|\binstalled\s+bundle\s+provides\s+exactly\s+one\b.{0,60}\b(?:legacy\s+)?docs_researcher\b|\blegacy\s+single\s+configured\b)"),
+        (
+            re.compile(r"\blegacy\s+single(?:[-\s]+only)?\b"),
+            re.compile(r"\binstalled\s+bundle\s+provides\s+exactly\s+one\b[^.!?;:]{0,60}\b(?:legacy\s+)?docs_researcher\b"),
+            re.compile(r"\blegacy\s+single\s+configured\b"),
+        ),
+        (re.compile(r"\b(?:not|no\s+longer)\s+legacy\s+single(?:[-\s]+only)?\b"),),
     ),
     (
         "All or every specialist is selected by default",
-        re.compile(
-            r"\b(?:spawn|run|start|delegate|launch|schedule|use)\b.{0,60}\b(?:all|every)\s+(?:the\s+)?(?:specialists?|reviewers?|agents?)\b.{0,40}\b(?:by default|as default|automatically)\b"
+        (
+            re.compile(r"\b(?:spawn|run|start|delegate|launch|schedule|use)\s+(?:all|every)\s+(?:the\s+)?(?:specialists?|reviewers?|agents?)\s+(?:by\s+default|as\s+default|automatically)\b"),
         ),
+        (re.compile(r"\b(?:never|do\s+not|don't|must\s+not|should\s+not)\s+(?:spawn|run|start|delegate|launch|schedule|use)\s+(?:all|every)\b"),),
     ),
     (
         "Fixed specialist pipeline is required",
-        re.compile(r"\b(?:fixed|predefined|rigid)\s+(?:agent|specialist)\s+(?:pipeline|sequence|roster)\b"),
+        (re.compile(r"\b(?:fixed|predefined|rigid)\s+(?:agent|specialist)\s+(?:pipeline|sequence|roster)\b"),),
+        (re.compile(r"\b(?:not|never|do\s+not|don't|must\s+not|should\s+not)\s+(?:(?:schedule|use|require|define|follow)\s+)?(?:a\s+)?(?:fixed|predefined|rigid)\s+(?:agent|specialist)\s+(?:pipeline|sequence|roster)\b"),),
     ),
     (
         "CLI automatic fallback or model switching is enabled",
-        re.compile(
-            r"(?:\bautomatic\s+cli\s+(?:fallback|model\s+switch(?:ing)?)\b|\bautomatic\s+model\s+fallback\b|\bcli\b.{0,40}\bautomatically\s+(?:switch(?:es|ing)?\s+models?|fallback)\b)"
+        (
+            re.compile(rf"\b{AUTOMATIC_CLI}\s+(?:is|are)\s+(?:enabled|performed|available|allowed)\b"),
+            re.compile(r"\b(?:this\s+)?skill\s+(?:performs?|provides?|enables?|uses?)\s+" + AUTOMATIC_CLI + r"\b"),
+            re.compile(r"\bautomatic\s+model\s+fallback\s+(?:is|are)\s+(?:enabled|performed|available|allowed)\b"),
+            re.compile(r"\bcli\s+automatically\s+(?:switch(?:es|ing)?\s+models?|falls?\s+back)\b"),
+        ),
+        (
+            re.compile(r"\b(?:this\s+)?skill\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:perform|provide|enable|use)\s+" + AUTOMATIC_CLI + r"\b"),
+            re.compile(r"\b(?:automatic\s+cli\s+(?:routing|fallback|model\s+switch(?:ing)?)|automatic\s+model\s+fallback)\s+(?:is|are)\s+not\s+(?:enabled|performed|available|allowed)\b"),
+            re.compile(r"\bcli\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+automatically\s+(?:switch(?:es|ing)?\s+models?|falls?\s+back)\b"),
         ),
     ),
     (
         "Stale implementation or live-conformance claim",
-        re.compile(
-            r"(?:\bcurrent\s+implementation\s+boundary\b|\blive\s+conformance\b.{0,80}\b(?:future|pending|not implemented|planned)\b)"
+        (
+            re.compile(r"\bcurrent\s+implementation\s+boundary\b"),
+            re.compile(r"\blive\s+conformance\b[^.!?;:]{0,80}\b(?:future|pending|not implemented|planned)\b"),
         ),
+        (),
     ),
     (
         "Probe, manifest, or App task proves effective route",
-        re.compile(
-            r"\b(?:probe|install(?:ation)?\s+manifest|app(?:\s+user-visible)?\s+task(?:\s+result)?s?)\b.{0,90}\b(?:proves?|establishes?|demonstrates?|confirms?)\b.{0,70}\b(?:effective|native)\b"
+        (
+            re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:proves?|establishes?|demonstrates?|confirms?)\s+{EFFECTIVE_ROUTE}\b"),
+            re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
+        ),
+        (
+            re.compile(rf"\b{ROUTE_EVIDENCE}\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:prove|establish|demonstrate|confirm)\s+{EFFECTIVE_ROUTE}\b"),
+            re.compile(rf"\b{EFFECTIVE_ROUTE}\s+(?:is|are)\s+(?:not|never)\s+(?:proven|established|demonstrated|confirmed)\s+by\s+{ROUTE_EVIDENCE}\b"),
         ),
     ),
     (
         "Skill changes parent model or permissions",
-        re.compile(
-            r"\bskill\b.{0,90}\b(?:changes?|switches?|controls?|overrides?)\b.{0,60}\b(?:parent\s+model|permissions?)\b"
+        (
+            re.compile(r"\b(?:this\s+)?skill\s+(?:changes?|switches?|controls?|overrides?)\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
+            re.compile(r"\b(?:the\s+)?(?:parent\s+model|permissions?)\s+(?:is|are)\s+(?:changed|switched|controlled|overridden)\s+by\s+(?:this\s+)?skill\b"),
+        ),
+        (
+            re.compile(r"\b(?:this\s+)?skill\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:change|switch|control|override)\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
+            re.compile(r"\b(?:do\s+not|don't|never|must\s+not|should\s+not)\s+claim\s+that\s+(?:this\s+)?skill\s+(?:changes?|switches?|controls?|overrides?)\s+(?:the\s+)?(?:parent\s+model|permissions?)\b"),
+            re.compile(r"\b(?:the\s+)?(?:parent\s+model|permissions?)\s+(?:is|are)\s+(?:not|never)\s+(?:changed|switched|controlled|overridden)\s+by\s+(?:this\s+)?skill\b"),
         ),
     ),
     (
         "Skill guarantees model availability",
-        re.compile(r"\b(?:guarantees?|ensures?)\b.{0,50}\b(?:model\s+)?availability\b"),
+        (
+            re.compile(r"\b(?:this\s+)?skill\s+(?:guarantees?|ensures?)\s+(?:the\s+)?(?:model\s+)?availability\b"),
+            re.compile(r"\b(?:model\s+)?availability\s+(?:is|are)\s+(?:guaranteed|ensured)\s+by\s+(?:this\s+)?skill\b"),
+        ),
+        (
+            re.compile(r"\b(?:this\s+)?skill\s+(?:does\s+not|doesn't|do\s+not|don't|never|cannot|can't)\s+(?:guarantee|ensure)\s+(?:the\s+)?(?:model\s+)?availability\b"),
+            re.compile(r"\b(?:model\s+)?availability\s+(?:is|are)\s+not\s+(?:guaranteed|ensured)\s+by\s+(?:this\s+)?skill\b"),
+        ),
     ),
 )
 REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
@@ -245,6 +298,19 @@ def extract_local_markdown_targets(text: str) -> list[str]:
     return targets
 
 
+def _contract_rule_matches(
+    clauses: list[str],
+    positive_patterns: tuple[re.Pattern[str], ...],
+    negative_patterns: tuple[re.Pattern[str], ...],
+) -> bool:
+    for clause in clauses:
+        if any(pattern.search(clause) for pattern in positive_patterns) and not any(
+            pattern.search(clause) for pattern in negative_patterns
+        ):
+            return True
+    return False
+
+
 def semantic_contract_violations(
     skill_text: str,
     reference_map: Mapping[str, str],
@@ -253,10 +319,11 @@ def semantic_contract_violations(
     """Return explicit contradiction labels for the frozen Skill contract."""
 
     reference_text = (reference_map[name] for name in sorted(reference_map))
-    corpus = _normalize_contract_text("\n".join((skill_text, *reference_text, ui_text)))
+    corpus = ". ".join((skill_text, *reference_text, ui_text))
+    clauses = _contract_clauses(corpus)
     violations: list[str] = []
-    for label, pattern in CONTRACT_CONTRADICTION_PATTERNS:
-        if _positive_contract_match(corpus, pattern) is not None:
+    for label, positive_patterns, negative_patterns in CONTRACT_CONTRADICTION_RULES:
+        if _contract_rule_matches(clauses, positive_patterns, negative_patterns):
             violations.append(label)
     skill_corpus = _normalize_contract_text(skill_text)
     for label, pattern in REQUIRED_CONTRACT_PATTERNS:
@@ -266,12 +333,15 @@ def semantic_contract_violations(
 
 
 def task_contract_violations(text: str) -> list[str]:
-    """Require exactly the five numbered task-packet headings in order."""
+    """Require exactly five H2 sections and reject Setext headings."""
 
-    headings = [match.group(0).strip() for match in NUMBERED_HEADING_RE.finditer(text)]
+    headings = [match.group(0).strip() for match in ATX_CONTRACT_SECTION_RE.finditer(text)]
+    violations: list[str] = []
     if headings != list(TASK_CONTRACT_HEADINGS):
-        return [f"task-contract numbered headings must be exactly {list(TASK_CONTRACT_HEADINGS)}: {headings}"]
-    return []
+        violations.append(f"task-contract H2/H3 headings must be exactly {list(TASK_CONTRACT_HEADINGS)}: {headings}")
+    if SETEXT_HEADING_RE.search(text) is not None:
+        violations.append("task-contract must not contain Setext headings")
+    return violations
 
 
 def reference_topology_violations(
