@@ -200,7 +200,7 @@ class SkillContractTests(unittest.TestCase):
             references["model-routing.md"] = routing_candidate
             self.assert_semantic_rejects(self.skill, references)
         fenced_peer = self.skill.replace("## Contract\n", "## Contract\n```\n## Peer `code`\n```\n", 1)
-        self.assertEqual(VALIDATOR.semantic_contract_violations(fenced_peer, self.references, self.ui), [])
+        self.assert_semantic_rejects(fenced_peer)
         commented_peer = self.skill.replace("## Contract\n", "## Contract\n<!--\n## Peer `code`\n-->\n", 1)
         self.assert_semantic_rejects(commented_peer)
         empty_peers = ("#", "##", "#   ", "##\t")
@@ -226,7 +226,7 @@ class SkillContractTests(unittest.TestCase):
             "## Contract\n```\n##\n```\n",
             1,
         )
-        self.assertEqual(VALIDATOR.semantic_contract_violations(fenced_empty, self.references, self.ui), [])
+        self.assert_semantic_rejects(fenced_empty)
         self.assertEqual(VALIDATOR.canonical_block_violations("model-routing.md", self.routing), [])
 
         routing_block = block(self.routing, "model-routing.md")
@@ -239,6 +239,50 @@ class SkillContractTests(unittest.TestCase):
         references = dict(self.references)
         references["model-routing.md"] = moved_routing
         self.assert_semantic_rejects(self.skill, references)
+
+    def test_canonical_block_requires_exact_section_adjacency(self) -> None:
+        self.assertEqual(VALIDATOR.canonical_block_violations("SKILL.md", self.skill), [])
+        self.assertEqual(VALIDATOR.canonical_block_violations("model-routing.md", self.routing), [])
+        mutations = (
+            " ## Peer\n",
+            "   # Peer\n",
+            "Injected peer\n---\n",
+            "Inserted prose\n",
+            "\n",
+        )
+        for insertion in mutations:
+            skill_candidate = self.skill.replace(
+                "## Contract\n\n",
+                "## Contract\n" + insertion + "\n",
+                1,
+            )
+            self.assert_semantic_rejects(skill_candidate)
+            self.assert_topology_rejects(skill_candidate)
+
+            routing_candidate = self.routing.replace(
+                "## Canonical routing contract\n\n",
+                "## Canonical routing contract\n" + insertion + "\n",
+                1,
+            )
+            references = dict(self.references)
+            references["model-routing.md"] = routing_candidate
+            self.assert_semantic_rejects(self.skill, references)
+            self.assert_topology_rejects(self.skill, references)
+
+        for text, filename, section in (
+            (self.skill, "SKILL.md", "## Contract"),
+            (self.routing, "model-routing.md", "## Canonical routing contract"),
+        ):
+            begin = VALIDATOR.CANONICAL_BLOCKS[filename][0]
+            no_blank = text.replace(section + "\n\n" + begin, section + "\n" + begin, 1)
+            if filename == "SKILL.md":
+                self.assert_semantic_rejects(no_blank)
+                self.assert_topology_rejects(no_blank)
+            else:
+                references = dict(self.references)
+                references[filename] = no_blank
+                self.assert_semantic_rejects(self.skill, references)
+                self.assert_topology_rejects(self.skill, references)
 
     def test_source_dialect_rejects_html_wrappers_and_angle_autolinks(self) -> None:
         begin = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][0]

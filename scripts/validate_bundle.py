@@ -334,6 +334,8 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     section_index = active_section_indexes[0]
     if section_index >= begin_index:
         return [f"{filename} canonical block section must precede its begin marker"]
+    if begin_index != section_index + 2 or lines[section_index + 1] != "":
+        return [f"{filename} canonical block must follow its section after exactly one blank line"]
     peer_flags = _source_flags(text, marker_lines, mask_inline_code=False)
     peer_headings = [
         i
@@ -388,15 +390,12 @@ def _inline_tokens(line: str) -> list[tuple[int, int, str, str]]:
         tokens.append((match.start(), match.end(), match.group(1), match.group(3).strip()))
     return tokens
 
-
 def _external_or_fragment(target: str) -> bool:
     target = target.strip().strip("<>")
     return target.startswith("#") or bool(re.match(r"(?i)^(?:https?://|mailto:)", target))
 
-
 def _has_link_syntax_without_token(line: str) -> bool:
     return any(marker in line for marker in ("](", "][", "]:"))
-
 
 def _reference_file_link_violations(filename: str, text: str) -> list[str]:
     errors: list[str] = []
@@ -421,10 +420,10 @@ def _reference_file_link_violations(filename: str, text: str) -> list[str]:
             errors.append(f"{filename}:{number} contains unsupported HTML anchor syntax")
     return errors
 
-
 def reference_topology_violations(skill_text: str, reference_map: dict[str, str], skill_path: Path | None = None) -> list[str]:
     errors: list[str] = []
     errors.extend(_source_dialect_violations("SKILL.md", skill_text))
+    errors.extend(canonical_block_violations("SKILL.md", skill_text))
     if set(reference_map) != SKILL_REFERENCE_FILES:
         errors.append(f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(reference_map)}")
 
@@ -454,6 +453,8 @@ def reference_topology_violations(skill_text: str, reference_map: dict[str, str]
     for filename, text in reference_map.items():
         errors.extend(_source_dialect_violations(filename, text))
         errors.extend(_reference_file_link_violations(filename, text))
+    if "model-routing.md" in reference_map:
+        errors.extend(canonical_block_violations("model-routing.md", reference_map["model-routing.md"]))
     return errors
 
 
