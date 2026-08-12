@@ -200,6 +200,28 @@ def _frontmatter(text: str) -> tuple[str | None, list[str]]:
     return block, []
 
 
+_UNSUPPORTED_SOURCE_SEPARATORS = (
+    ("\r", "CR"),
+    ("\v", "VT"),
+    ("\f", "FF"),
+    ("\x85", "NEL"),
+    ("\u2028", "line separator"),
+    ("\u2029", "paragraph separator"),
+)
+
+def _source_lines(text: str) -> list[str]:
+    lines = text.split("\n")
+    if lines and lines[-1] == "": lines.pop()
+    return lines
+
+def _source_separator_violations(filename: str, text: str) -> list[str]:
+    errors: list[str] = []
+    for number, line in enumerate(_source_lines(text), 1):
+        for separator, name in _UNSUPPORTED_SOURCE_SEPARATORS:
+            if separator in line:
+                errors.append(f"{filename}:{number} contains unsupported {name} line separator")
+    return errors
+
 def _fence_start(line: str) -> tuple[str, int] | None:
     backtick = re.fullmatch(r"[ ]{0,3}(`{3,})([^`]*)", line)
     if backtick is not None:
@@ -226,8 +248,7 @@ def _source_flags(
     flags: list[bool] = []
     fence: tuple[str, int] | None = None
     comment = False
-    for raw in text.splitlines():
-        line = raw.rstrip("\r")
+    for line in _source_lines(text):
         active = fence is None and not comment
         if fence is not None:
             flags.append(False)
@@ -266,14 +287,15 @@ def _source_dialect_violations(filename: str, text: str) -> list[str]:
     """Reject unsupported angle/HTML source; only registered marker lines are allowed."""
     registered = CANONICAL_BLOCKS.get(filename)
     marker_lines = set(registered[:2]) if registered is not None else set()
-    errors: list[str] = []
-    for number, line in enumerate(text.splitlines(), 1):
+    errors = _source_separator_violations(filename, text)
+    lines = _source_lines(text)
+    for number, line in enumerate(lines, 1):
         if line in marker_lines:
             continue
         if "<!--" in line or "-->" in line or re.search(r"<[^>\n]+>", line):
             errors.append(f"{filename}:{number} contains unsupported angle or HTML source syntax")
     fence: tuple[str, int] | None = None
-    for number, line in enumerate(text.splitlines(), 1):
+    for number, line in enumerate(lines, 1):
         if fence is not None:
             if _fence_close(line, fence):
                 fence = None
@@ -291,7 +313,7 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
     if registered is None:
         return []
     begin, end, expected = registered
-    lines = text.splitlines()
+    lines = _source_lines(text)
     marker_lines = {begin, end}
     flags = _source_flags(text, marker_lines)
     begin_indexes = [i for i, line in enumerate(lines) if line == begin]
@@ -330,7 +352,7 @@ def canonical_block_violations(filename: str, text: str) -> list[str]:
 
 def openai_yaml_violations(text: str) -> list[str]:
     """Parse the deliberately closed interface schema, not general YAML."""
-    lines = text.splitlines()
+    lines = _source_lines(text)
     if lines == [""]:
         lines = []
     errors: list[str] = []
@@ -378,7 +400,7 @@ def _has_link_syntax_without_token(line: str) -> bool:
 
 def _reference_file_link_violations(filename: str, text: str) -> list[str]:
     errors: list[str] = []
-    for number, line in enumerate(text.splitlines(), 1):
+    for number, line in enumerate(_source_lines(text), 1):
         for _, _, _, target in _inline_tokens(line):
             if not _external_or_fragment(target):
                 errors.append(f"{filename}:{number} contains a cross-file Markdown link")
@@ -407,7 +429,7 @@ def reference_topology_violations(skill_text: str, reference_map: dict[str, str]
         errors.append(f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(reference_map)}")
 
     active = _source_flags(skill_text)
-    skill_lines = skill_text.splitlines()
+    skill_lines = _source_lines(skill_text)
     expected_counts = {target: 0 for target in DIRECT_LINK_LINES}
     for index, line in enumerate(skill_lines):
         exact_target = next((target for target, source in DIRECT_LINK_LINES.items() if line == source), None)
@@ -480,8 +502,8 @@ def task_contract_violations(text: str) -> list[str]:
         "## 4. Constraints/requirements",
         "## 5. Verification/handoff",
     ]
-    lines = text.splitlines()
-    errors: list[str] = []
+    lines = _source_lines(text)
+    errors = _source_separator_violations("task-contract.md", text)
     if any(re.search(r"(?:`{3,}|~{3,})", line) for line in lines):
         errors.append("task-contract.md does not allow fenced code")
     if re.search(r"<h[1-6](?:\s|>)", text, re.IGNORECASE):

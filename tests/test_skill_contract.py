@@ -356,6 +356,34 @@ class SkillContractTests(unittest.TestCase):
         self.assert_semantic_rejects(self.skill, references)
         self.assert_topology_rejects(self.skill, references)
 
+    def test_lf_only_source_lines_reject_all_unsupported_separators(self) -> None:
+        self.assertEqual(VALIDATOR._source_lines("one\r\ntwo"), ["one\r", "two"])
+        separators = ("\r", "\v", "\f", "\x85", "\u2028", "\u2029")
+        for separator in separators:
+            self.assertFalse(VALIDATOR._fence_close("```" + separator, ("`", 3)))
+            self.assertTrue(VALIDATOR._source_separator_violations("probe.md", "plain" + separator + "text"))
+
+            false_close = "```" + separator + "\n"
+            for section in ("## Contract\n", "## References\n"):
+                candidate = self.skill.replace(section, "```text\n" + section + false_close, 1)
+                self.assert_semantic_rejects(candidate)
+                self.assert_topology_rejects(candidate)
+
+            routing = self.routing.replace(
+                "## Canonical routing contract\n",
+                "```text\n## Canonical routing contract\n" + false_close,
+                1,
+            )
+            references = dict(self.references)
+            references["model-routing.md"] = routing
+            self.assert_semantic_rejects(self.skill, references)
+            self.assert_topology_rejects(self.skill, references)
+
+            non_fence = dict(self.references)
+            non_fence["workflow.md"] += "\nplain" + separator + "text\n"
+            self.assert_semantic_rejects(self.skill, non_fence)
+            self.assert_topology_rejects(self.skill, non_fence)
+
     def test_task_contract_h1_and_h2_wrong_order_are_not_sentinels(self) -> None:
         wrong = self.task.replace("## 2. Ownership\n", "## 3. Inputs/evidence\n", 1)
         self.assertTrue(VALIDATOR.task_contract_violations(wrong))
