@@ -19,6 +19,24 @@ REQUIRED_REFERENCES = {
     "task-contract.md",
     "workflow.md",
 }
+STALE_CLAIMS = (
+    "current implementation boundary",
+    "installed bundle provides exactly one",
+    "legacy single configured",
+    "dual-agent installer",
+    "future work",
+    "live conformance",
+    "automatic model fallback",
+    "cli automatic model fallback",
+    "probe proves effective route",
+)
+APP_LANE_FRAGMENTS = [
+    "App user-visible task lane",
+    "explicit authorization in the current user request",
+    "separate from native",
+    "cannot establish native effective model or effort",
+    "cannot authorize native Terra fallback",
+]
 
 
 def frontmatter(text: str) -> tuple[list[str], str]:
@@ -50,7 +68,24 @@ def require_fragments(text: str, fragments: list[str]) -> None:
         raise AssertionError(f"missing contract fragments: {missing}")
 
 
-def require_skill_topology(skill_text: str, skill_path: Path) -> None:
+def require_app_lane_contract(text: str) -> None:
+    require_fragments(text, APP_LANE_FRAGMENTS)
+
+
+def require_no_stale_claims(text: str) -> None:
+    lowered = text.casefold()
+    found = [claim for claim in STALE_CLAIMS if claim.casefold() in lowered]
+    if found:
+        raise AssertionError(f"stale Skill claims found: {found}")
+
+
+def require_reference_topology(
+    skill_text: str,
+    reference_map: dict[str, str],
+    skill_path: Path,
+) -> None:
+    if set(reference_map) != REQUIRED_REFERENCES:
+        raise AssertionError(f"reference set drifted: {sorted(reference_map)}")
     targets = set(local_markdown_targets(skill_text))
     expected = {f"references/{name}" for name in REQUIRED_REFERENCES}
     if targets != expected:
@@ -59,6 +94,10 @@ def require_skill_topology(skill_text: str, skill_path: Path) -> None:
         resolved = (skill_path.parent / target).resolve()
         if not resolved.is_file():
             raise AssertionError(f"unresolved Skill reference: {target}")
+    for name, text in reference_map.items():
+        nested = [target for target in local_markdown_targets(text) if target.endswith(".md")]
+        if nested:
+            raise AssertionError(f"{name} links to another local reference: {nested}")
 
 
 class SkillContractTests(unittest.TestCase):
@@ -151,6 +190,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("complete same-attempt native route mismatch", self.routing.casefold())
 
     def test_evidence_layers_and_app_lane_are_separate(self) -> None:
+        require_app_lane_contract(self.routing)
         require_fragments(
             self.routing,
             [
@@ -158,11 +198,6 @@ class SkillContractTests(unittest.TestCase):
                 "installed/configured facts",
                 "observed native effective facts",
                 "same-attempt native runtime details",
-                "App user-visible task lane",
-                "explicit authorization in the current user request",
-                "separate from native",
-                "cannot establish native effective model or effort",
-                "cannot authorize native Terra fallback",
                 "parent model",
                 "bypasses permissions",
                 "guarantees a model",
@@ -172,11 +207,7 @@ class SkillContractTests(unittest.TestCase):
         )
 
     def test_reference_topology_is_exact_and_first_level(self) -> None:
-        self.assertEqual(set(self.references), REQUIRED_REFERENCES)
-        require_skill_topology(self.skill, SKILL_PATH)
-        for name, text in self.references.items():
-            nested = [target for target in local_markdown_targets(text) if target.endswith(".md")]
-            self.assertEqual(nested, [], f"{name} links to another local reference: {nested}")
+        require_reference_topology(self.skill, self.references, SKILL_PATH)
 
     def test_selective_specialist_boundaries(self) -> None:
         require_fragments(
@@ -197,18 +228,7 @@ class SkillContractTests(unittest.TestCase):
 
     def test_stale_claims_are_absent(self) -> None:
         corpus = "\n".join([self.skill, *self.references.values(), self.ui]).casefold()
-        for stale in (
-            "current implementation boundary",
-            "installed bundle provides exactly one",
-            "legacy single configured",
-            "dual-agent installer",
-            "future work",
-            "live conformance",
-            "automatic model fallback",
-            "cli automatic model fallback",
-            "probe proves effective route",
-        ):
-            self.assertNotIn(stale, corpus)
+        require_no_stale_claims(corpus)
 
     def test_mutated_in_memory_contracts_fail(self) -> None:
         missing_packet_link = self.skill.replace(
@@ -216,7 +236,7 @@ class SkillContractTests(unittest.TestCase):
             "references/removed-task-contract.md",
         )
         with self.assertRaises(AssertionError):
-            require_skill_topology(missing_packet_link, SKILL_PATH)
+            require_reference_topology(missing_packet_link, self.references, SKILL_PATH)
 
         missing_lead_responsibility = self.skill.replace("Own the user's intent", "Ignore the user's intent")
         with self.assertRaises(AssertionError):
@@ -231,6 +251,22 @@ class SkillContractTests(unittest.TestCase):
                 missing_fallback_guard,
                 ["Content, tool,\ntask, timeout, and unknown-exception outcomes never authorize Terra"],
             )
+
+        weakened_app_lane = self.routing.replace(
+            "explicit authorization in the current user request",
+            "an authorization signal",
+        )
+        with self.assertRaises(AssertionError):
+            require_app_lane_contract(weakened_app_lane)
+
+        stale_claim = self.skill + "\nThe dual-agent installer is future work.\n"
+        with self.assertRaises(AssertionError):
+            require_no_stale_claims(stale_claim)
+
+        nested_reference_map = dict(self.references)
+        nested_reference_map["workflow.md"] += "\n[Routing](model-routing.md)\n"
+        with self.assertRaises(AssertionError):
+            require_reference_topology(self.skill, nested_reference_map, SKILL_PATH)
 
 
 if __name__ == "__main__":
