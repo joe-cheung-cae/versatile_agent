@@ -194,17 +194,10 @@ def _frontmatter(text: str) -> tuple[str | None, list[str]]:
     if match is None:
         return None, ["SKILL.md must begin with YAML frontmatter"]
     block = match.group(1)
-    keys = [line.split(":", 1)[0].strip() for line in block.splitlines() if ":" in line]
-    if keys != ["name", "description"]:
-        return block, [f"SKILL.md frontmatter keys must be name and description only: {keys}"]
-    name = re.search(r"^name:\s*(.*)$", block, re.MULTILINE)
-    description = re.search(r"^description:\s*(.*)$", block, re.MULTILINE)
-    errors: list[str] = []
-    if name is None or name.group(1) != "versatile-dev":
-        errors.append("SKILL.md name must be versatile-dev")
-    if description is None or description.group(1) != EXPECTED_DESCRIPTION:
-        errors.append("SKILL.md description drifted from the registered trigger contract")
-    return block, errors
+    expected = f"name: versatile-dev\ndescription: {EXPECTED_DESCRIPTION}"
+    if block != expected:
+        return block, ["SKILL.md frontmatter must be the exact two-line trigger contract"]
+    return block, []
 
 
 def _fence_start(line: str) -> tuple[str, int] | None:
@@ -254,6 +247,19 @@ def _source_flags(text: str, marker_lines: set[str] | None = None) -> list[bool]
         )
         flags.append(active and not container and not inline_code)
     return flags
+
+
+def _source_dialect_violations(filename: str, text: str) -> list[str]:
+    """Reject unsupported angle/HTML source; only registered marker lines are allowed."""
+    registered = CANONICAL_BLOCKS.get(filename)
+    marker_lines = set(registered[:2]) if registered is not None else set()
+    errors: list[str] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if line in marker_lines:
+            continue
+        if "<!--" in line or "-->" in line or re.search(r"<[^>\n]+>", line):
+            errors.append(f"{filename}:{number} contains unsupported angle or HTML source syntax")
+    return errors
 
 
 def canonical_block_violations(filename: str, text: str) -> list[str]:
@@ -362,6 +368,7 @@ def _reference_file_link_violations(filename: str, text: str) -> list[str]:
 
 def reference_topology_violations(skill_text: str, reference_map: dict[str, str], skill_path: Path | None = None) -> list[str]:
     errors: list[str] = []
+    errors.extend(_source_dialect_violations("SKILL.md", skill_text))
     if set(reference_map) != SKILL_REFERENCE_FILES:
         errors.append(f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(reference_map)}")
 
@@ -389,6 +396,7 @@ def reference_topology_violations(skill_text: str, reference_map: dict[str, str]
             errors.append(f"SKILL.md must contain exactly one active direct link to {target}; found {count}")
 
     for filename, text in reference_map.items():
+        errors.extend(_source_dialect_violations(filename, text))
         errors.extend(_reference_file_link_violations(filename, text))
     return errors
 
@@ -477,6 +485,9 @@ def semantic_contract_violations(skill_text: str, reference_map: dict[str, str],
     errors: list[str] = []
     _, frontmatter_errors = _frontmatter(skill_text)
     errors.extend(frontmatter_errors)
+    errors.extend(_source_dialect_violations("SKILL.md", skill_text))
+    for filename, text in reference_map.items():
+        errors.extend(_source_dialect_violations(filename, text))
     errors.extend(canonical_block_violations("SKILL.md", skill_text))
     if "model-routing.md" in reference_map:
         errors.extend(canonical_block_violations("model-routing.md", reference_map["model-routing.md"]))

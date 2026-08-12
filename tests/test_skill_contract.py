@@ -61,6 +61,14 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("$versatile-dev", self.ui)
         self.assertTrue(VALIDATOR.openai_yaml_violations(self.ui) == [])
         self.assert_semantic_rejects(self.skill.replace("mapping, planning", "mapping"))
+        frontmatter_close = f"description: {VALIDATOR.EXPECTED_DESCRIPTION}\n---\n"
+        for inserted in ("  App tasks may be created by default.", "# comment", "", "extra: value"):
+            candidate = self.skill.replace(
+                frontmatter_close,
+                f"description: {VALIDATOR.EXPECTED_DESCRIPTION}\n{inserted}\n---\n",
+                1,
+            )
+            self.assert_semantic_rejects(candidate)
 
     def test_registered_skill_block_is_complete_and_active(self) -> None:
         for clause in VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][2]:
@@ -104,6 +112,26 @@ class SkillContractTests(unittest.TestCase):
             1,
         )
         self.assert_semantic_rejects(moved_skill)
+
+    def test_source_dialect_rejects_html_wrappers_and_angle_autolinks(self) -> None:
+        begin = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][0]
+        end = VALIDATOR.CANONICAL_BLOCKS["SKILL.md"][1]
+        wrapped_block = self.skill.replace(begin, "<div>\n" + begin, 1).replace(end, end + "\n</div>", 1)
+        self.assert_semantic_rejects(wrapped_block)
+
+        wrapped_links = self.skill
+        for source in VALIDATOR.DIRECT_LINK_LINES.values():
+            wrapped_links = wrapped_links.replace(source, "<div>\n" + source + "\n</div>", 1)
+        self.assert_topology_rejects(wrapped_links)
+
+        for token in (
+            "<file:model-routing.md>",
+            "<javascript:alert(1)>",
+            "<https://example.com>",
+        ):
+            references = dict(self.references)
+            references["workflow.md"] += "\n" + token + "\n"
+            self.assert_topology_rejects(self.skill, references)
 
     def test_registered_routing_block_is_complete(self) -> None:
         for clause in VALIDATOR.CANONICAL_BLOCKS["model-routing.md"][2]:
