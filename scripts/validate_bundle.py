@@ -68,6 +68,14 @@ ROUTING_FIXTURES = {
     "luna-success.json",
     "terra-success.json",
 }
+SKILL_REFERENCE_FILES = {
+    "cuda-cae-review-policy.md",
+    "model-routing.md",
+    "review-policy.md",
+    "task-contract.md",
+    "workflow.md",
+}
+MARKDOWN_LINK_RE = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
 
 class Validation:
@@ -116,16 +124,40 @@ def validate_skill(root: Path, check: Validation) -> None:
         ui_text = ui.read_text(encoding="utf-8")
         check.require("$versatile-dev" in ui_text, "openai.yaml default_prompt must mention $versatile-dev")
 
-    required_references = {
-        "workflow.md",
-        "task-contract.md",
-        "review-policy.md",
-        "cuda-cae-review-policy.md",
-        "model-routing.md",
-    }
     reference_dir = root / "payload/skills/versatile-dev/references"
     actual_references = {item.name for item in reference_dir.glob("*.md")}
-    check.require(required_references <= actual_references, f"missing skill references: {sorted(required_references - actual_references)}")
+    check.require(
+        actual_references == SKILL_REFERENCE_FILES,
+        f"skill references must be exactly {sorted(SKILL_REFERENCE_FILES)}: {sorted(actual_references)}",
+    )
+
+    expected_links = {f"references/{name}" for name in SKILL_REFERENCE_FILES}
+    local_links = set()
+    for raw_target in MARKDOWN_LINK_RE.findall(text):
+        target = raw_target.strip().split("#", 1)[0]
+        if not target or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
+            continue
+        local_links.add(target)
+    check.require(
+        local_links == expected_links,
+        f"SKILL.md links must resolve to direct references only: {sorted(local_links)}",
+    )
+    for target in local_links:
+        check.require(
+            (skill.parent / target).is_file(),
+            f"SKILL.md has an unresolved local link: {target}",
+        )
+
+    for reference in reference_dir.glob("*.md"):
+        nested_links = []
+        for raw_target in MARKDOWN_LINK_RE.findall(reference.read_text(encoding="utf-8")):
+            target = raw_target.strip().split("#", 1)[0]
+            if target and target.endswith(".md"):
+                nested_links.append(target)
+        check.require(
+            not nested_links,
+            f"skill reference must not link to another local reference: {reference.name}: {nested_links}",
+        )
 
 
 def validate_agents(root: Path, check: Validation) -> None:

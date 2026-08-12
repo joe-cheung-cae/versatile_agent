@@ -1,4 +1,4 @@
 interface:
   display_name: "Versatile Development"
-  short_description: "Adaptive multi-agent engineering workflow"
-  default_prompt: "Use $versatile-dev to plan, implement, validate, and independently review this engineering task."
+  short_description: "Classify, route, verify, and review engineering work"
+  default_prompt: "Use $versatile-dev for non-trivial repository engineering: classify the task, plan, implement, verify, independently review, and accept the change."
