@@ -260,18 +260,26 @@ class SkillContractTests(unittest.TestCase):
             "The parent model is switched by this Skill.",
             "Content failures can authorize Terra fallback.",
             "Content failures could authorize Terra fallback.",
+            "Content failures will authorize Terra fallback.",
             "Terra fallback can be authorized by content failures.",
             "Terra fallback could be authorized by content failures.",
+            "If a task fails, use Terra.",
+            "Content failures and native routing failures authorize Terra fallback.",
             "The installation manifest can prove the effective native route.",
             "The installation manifest could prove the effective native route.",
             "The effective native route can be proven by the installation manifest.",
             "The effective native route could be proven by the installation manifest.",
             "This Skill can switch the parent model.",
             "This Skill could switch the parent model.",
+            "This Skill may change the parent model.",
             "The parent model can be switched by this Skill.",
             "The parent model could be switched by this Skill.",
             "Implicit consent suffices for App tasks.",
             "App tasks could be created without explicit authorization.",
+            "The probe will confirm the effective native route.",
+            "Offline validation will establish live runtime conformance.",
+            "App tasks can rely on implied authorization.",
+            "Create an App task unless the user opts out.",
             "Offline validation proves live runtime conformance.",
             "Live runtime conformance is proven by offline validation.",
             "The App task cannot be created without explicit authorization, but content failures authorize Terra fallback.",
@@ -299,11 +307,19 @@ class SkillContractTests(unittest.TestCase):
             "This Skill does not switch the parent model.",
             "The parent model is not switched by this Skill.",
             "Content failures cannot authorize Terra fallback.",
+            "Neither content failures nor tool failures authorize Terra fallback.",
+            "Do not use Terra if a task fails.",
             "Terra fallback cannot be authorized by content failures.",
             "The installation manifest cannot prove the effective native route.",
             "The effective native route cannot be proven by the installation manifest.",
             "This Skill cannot switch the parent model.",
             "The parent model cannot be switched by this Skill.",
+            "This Skill may not change the parent model.",
+            "This Skill cannot perform automatic CLI fallback.",
+            "The probe will not confirm the effective native route.",
+            "Offline validation will not establish live runtime conformance.",
+            "App tasks cannot rely on implied authorization.",
+            "Do not create an App task unless explicitly authorized in the current user request.",
             "Implicit consent does not suffice for App tasks.",
             "Offline validation does not prove live runtime conformance.",
             "Live runtime conformance is not proven by offline validation.",
@@ -467,6 +483,57 @@ class SkillContractTests(unittest.TestCase):
             [],
         )
 
+        required_links = "\n".join(
+            f"[label-{name}](references/{name})" for name in sorted(REQUIRED_REFERENCES)
+        )
+        fenced_only_links = re.sub(
+            r"\[[^\]]+\]\(\s*(?:<[^>]+>|[^\s)]+)\)",
+            "",
+            self.skill,
+        ) + "\n```markdown\n" + required_links + "\n```\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(fenced_only_links, self.references, SKILL_PATH),
+                [],
+            )
+
+        image_only_links = re.sub(
+            r"\[[^\]]+\]\(\s*(?:<[^>]+>|[^\s)]+)\)",
+            "",
+            self.skill,
+        ) + "\n" + "\n".join(
+            f"![alt-{name}](references/{name})" for name in sorted(REQUIRED_REFERENCES)
+        )
+        with self.assertRaises(AssertionError):
+            self.assertEqual(
+                VALIDATOR.reference_topology_violations(image_only_links, self.references, SKILL_PATH),
+                [],
+            )
+
+        shortcut_definitions = "\n".join(
+            f"[shortcut-{name}]: references/{name}" for name in sorted(REQUIRED_REFERENCES)
+        )
+        shortcut_usages = "\n".join(f"[shortcut-{name}]" for name in sorted(REQUIRED_REFERENCES))
+        shortcut_skill = re.sub(
+            r"\[[^\]]+\]\(\s*(?:<[^>]+>|[^\s)]+)\)",
+            "",
+            self.skill,
+        ) + "\n" + shortcut_definitions + "\n" + shortcut_usages
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(shortcut_skill, self.references, SKILL_PATH),
+            [],
+        )
+
+        fenced_reference_map = dict(self.references)
+        fenced_reference_map["workflow.md"] += "\n```markdown\n[Nested](model-routing.md)\n```\n"
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(self.skill, fenced_reference_map, SKILL_PATH),
+            [],
+        )
+
+        malformed_brackets = "[" * 100_000
+        self.assertEqual(VALIDATOR.extract_local_markdown_targets(malformed_brackets), [])
+
         unused_definitions = "\n".join(
             f"[unused-{name}]: references/{name}" for name in sorted(REQUIRED_REFERENCES)
         )
@@ -515,6 +582,23 @@ class SkillContractTests(unittest.TestCase):
             VALIDATOR.task_contract_violations(packet + "\n- ordinary packet detail\n"),
             [],
         )
+        closed_hash_packet = re.sub(
+            r"(?m)^(## (?:1\. Objective|2\. Ownership|3\. Inputs/evidence|4\. Constraints/requirements|5\. Verification/handoff))$",
+            r"\1 ##",
+            packet,
+        )
+        self.assertEqual(VALIDATOR.task_contract_violations(closed_hash_packet), [])
+
+        unclosed = packet + "\n```markdown\n## Extra\n"
+        unfenced_lines, unclosed_fence = VALIDATOR._unfenced_lines(unclosed)
+        self.assertTrue(unclosed_fence)
+        self.assertNotIn("## Extra", unfenced_lines)
+        with self.assertRaises(AssertionError):
+            self.assertEqual(VALIDATOR.task_contract_violations(unclosed), [])
+
+        mismatched_unclosed = packet + "\n~~~~markdown\n## Extra\n```\n"
+        with self.assertRaises(AssertionError):
+            self.assertEqual(VALIDATOR.task_contract_violations(mismatched_unclosed), [])
 
 
 if __name__ == "__main__":
