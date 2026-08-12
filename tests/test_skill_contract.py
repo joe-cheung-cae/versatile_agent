@@ -545,6 +545,8 @@ class SkillContractTests(unittest.TestCase):
             "App tasks are not required to obtain explicit current-request authorization.",
             "App tasks should not rely on explicit current-request authorization.",
             "App tasks need not be created with explicit current-request authorization.",
+            "App tasks require explicit authorization for the session, not for the current request.",
+            "App tasks are not limited to authorization in the current request; session approval is sufficient.",
         )
         for addition in rejected:
             with self.subTest(addition=addition):
@@ -563,6 +565,8 @@ class SkillContractTests(unittest.TestCase):
             "App tasks do not accept prior request authorization.",
             "App tasks must not be created without explicit current-request authorization.",
             "App tasks may not rely on implicit consent.",
+            "Session approval is not sufficient; App tasks require explicit authorization in the current request.",
+            "App tasks require explicit current-request authorization, not merely session approval.",
         )
         for addition in accepted:
             with self.subTest(addition=addition):
@@ -581,12 +585,14 @@ class SkillContractTests(unittest.TestCase):
             "- ordinary paragraph\n      App tasks may be created by default.\n",
             "> ordinary paragraph\n>     App tasks may be created by default.\n",
             "- > paragraph\n  >     App tasks may be created by default.\n",
+            "- outer\n  - > paragraph\n    >     App tasks may be created by default.\n",
         )
         blank_code_cases = (
             "ordinary paragraph\n\n      App tasks may be created by default.\n",
             "- ordinary paragraph\n\n      App tasks may be created by default.\n",
             "> ordinary paragraph\n>\n>     App tasks may be created by default.\n",
             "- > paragraph\n  >\n  >     App tasks may be created by default.\n",
+            "- outer\n  - > paragraph\n    >\n    >     App tasks may be created by default.\n",
         )
 
         for case in open_cases:
@@ -700,6 +706,7 @@ class SkillContractTests(unittest.TestCase):
             (r"model-routing.md\child", "model-routing.md/child"),
             ("model-routing.md%5Cchild", "model-routing.md/child"),
             ("model-routing.md%255Cchild", "model-routing.md/child"),
+            ("model-routing.md%252525255Cchild", "model-routing.md/child"),
             ("sub%5C..%5Cmodel-routing.md", "model-routing.md"),
         )
         for suffix, expected in suffixes:
@@ -750,6 +757,47 @@ class SkillContractTests(unittest.TestCase):
             [],
         )
 
+        def deeply_encoded(control: str, depth: int) -> str:
+            encoded = f"%{control}"
+            for _ in range(depth):
+                encoded = encoded.replace("%", "%25")
+            return encoded
+
+        for control in ("2F", "5C", "2E"):
+            with self.subTest(deep_control=control):
+                suffix = "model-routing.md" + deeply_encoded(control, 100) + "child"
+                normalized, diagnostic = VALIDATOR._normalize_markdown_target_details(
+                    suffix
+                )
+                self.assertIsNotNone(normalized)
+                self.assertIsNotNone(diagnostic)
+                self.assertTrue(
+                    any(
+                        marker in str(diagnostic)
+                        for marker in (
+                            "bounded",
+                            "residual encoded path",
+                            "backslash separator",
+                        )
+                    )
+                )
+                deep_map = dict(self.references)
+                deep_map["workflow.md"] += f"\n[nested]({suffix})\n"
+                with self.assertRaises(AssertionError):
+                    self.assertEqual(
+                        VALIDATOR.reference_topology_violations(
+                            self.skill, deep_map, SKILL_PATH
+                        ),
+                        [],
+                    )
+
+        validator_source = VALIDATOR_PATH.read_text(encoding="utf-8")
+        self.assertIn("PERCENT_DECODE_WORK_FACTOR", validator_source)
+        self.assertNotIn(
+            "for _ in range(4):\n        next_value = unquote",
+            validator_source,
+        )
+
     def test_raw_html_pending_state_is_bounded_and_linear(self) -> None:
         for opener, diagnostic in (
             ("<a", "raw HTML link tag"),
@@ -787,6 +835,44 @@ class SkillContractTests(unittest.TestCase):
         self.assertIn("_raw_html_pending_kind", validator_source)
         self.assertNotIn("combined = pending +", validator_source)
         self.assertNotIn("_raw_html_pending_prefix", validator_source)
+
+        for opener, kind in (("<a", "link"), ("<h2", "heading")):
+            with self.subTest(pending_fence=opener):
+                interrupted = [opener, "``` text", ">", "````"]
+                interrupted_diagnostics = (
+                    VALIDATOR._raw_html_diagnostics_for_rendered_lines(interrupted)
+                )
+                self.assertTrue(
+                    any("unterminated raw HTML" in item for item in interrupted_diagnostics)
+                )
+                self.assertTrue(
+                    any("interrupted by a fenced code block" in item for item in interrupted_diagnostics)
+                )
+
+                reference_map = dict(self.references)
+                reference_map["workflow.md"] += "\n" + "\n".join(interrupted) + "\n"
+                with self.assertRaises(AssertionError):
+                    self.assertEqual(
+                        VALIDATOR.reference_topology_violations(
+                            self.skill, reference_map, SKILL_PATH
+                        ),
+                        [],
+                    )
+                self.assertTrue(
+                    VALIDATOR.task_contract_violations(
+                        self.references["task-contract.md"]
+                        + "\n\n"
+                        + "\n".join(interrupted)
+                        + "\n"
+                    )
+                )
+
+        self.assertEqual(
+            VALIDATOR._raw_html_diagnostics_for_rendered_lines(
+                ["``` text", "<h2>Hidden</h2>", "````"]
+            ),
+            [],
+        )
 
     def test_semantic_rendered_masking_and_linear_connector_chain(self) -> None:
         hidden = (

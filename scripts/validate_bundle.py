@@ -103,6 +103,10 @@ RAW_HTML_TAG_PREFIX_RE = re.compile(
     r"<\s*/?\s*(a|h[1-6])(?:\s|$)", re.IGNORECASE
 )
 HTML_ENTITY_RE = re.compile(r"&(?:#\d{1,7}|#x[0-9a-f]{1,6}|[a-z][a-z0-9]{1,31});", re.IGNORECASE)
+ENCODED_PATH_CONTROL_RE = re.compile(r"%(?:25)*(?:2f|5c|2e)", re.IGNORECASE)
+PERCENT_DECODE_MAX_PASSES = 64
+PERCENT_DECODE_WORK_FACTOR = 32
+PERCENT_DECODE_MIN_BUDGET = 1024
 SENSITIVE_PREDICATE_START_RE = re.compile(
     r"^(?:is|are|was|were|may|can|could|will|must|should|do|does|did|"
     r"authorize|authorizes|allow|allows|require|requires|rely|relies|"
@@ -220,6 +224,9 @@ CONTRACT_CONTRADICTION_RULES: tuple[
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\b(?:may|can|could|will|is|are)\s+(?:be\s+)?created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,100}\b(?:may|can|could|will)\s+(?:be\s+)?created[^.!?;:]{0,40}\bby\s+default\b"),
             re.compile(r"\b(?:create|creating)\s+(?:an?\s+)?app(?:\s+user-visible)?\s+task\b[^.!?;:]{0,80}\bunless\s+(?:the\s+)?user\s+opts?\s+out\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,60}\brequire\s+(?:an?\s+)?explicit\s+authori[sz]ation\s+for\s+the\s+session\b[^.!?;:]{0,40}\bnot\s+for\s+(?:the\s+)?current\s+request\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\bare\s+not\s+limited\s+to\s+(?:explicit\s+)?authori[sz]ation\s+in\s+(?:the\s+)?current\s+request\b[^.!?;:]{0,50}\bsession\s+approval\s+is\s+sufficient\b"),
+            re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\bare\s+not\s+limited\s+to\s+(?:explicit\s+)?authori[sz]ation\s+in\s+(?:the\s+)?current\s+request\b"),
         ),
         (
             re.compile(r"\bapp(?:\s+user-visible)?\s+tasks?\s+cannot\s+be\s+created\s+without\s+(?:an?\s+)?(?:explicit\s+)?authori[sz]ation\b"),
@@ -439,6 +446,13 @@ APP_UNSAFE_OPT_IN_NEGATION_RE = re.compile(
     r"[^.!?;:]{0,50}\b(?:an?\s+)?explicit\s+(?:current[-\s]+request\s+)?authori[sz]ation\b"
     r")"
 )
+APP_UNSAFE_SESSION_SCOPE_RE = re.compile(
+    r"(?:"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,60}\brequire\s+(?:an?\s+)?explicit\s+authori[sz]ation\s+for\s+the\s+session\b"
+    r"[^.!?;:]{0,40}\bnot\s+for\s+(?:the\s+)?current\s+request\b|"
+    r"\bapp(?:\s+user-visible)?\s+tasks?\b[^.!?;:]{0,80}\bare\s+not\s+limited\s+to\s+(?:explicit\s+)?authori[sz]ation\s+in\s+(?:the\s+)?current\s+request\b"
+    r")"
+)
 
 
 class _SensitiveContractPolicy(NamedTuple):
@@ -649,6 +663,7 @@ def _sensitive_clause_is_legal(fragment: str, policy: _SensitiveContractPolicy) 
         and (
             APP_UNSAFE_REQUIRE_NEGATION_RE.search(fragment) is not None
             or APP_UNSAFE_OPT_IN_NEGATION_RE.search(fragment) is not None
+            or APP_UNSAFE_SESSION_SCOPE_RE.search(fragment) is not None
         )
     ):
         return False
@@ -764,13 +779,49 @@ REQUIRED_CONTRACT_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 )
 
 
-def _decode_percent_escapes(text: str) -> str:
+def _decode_percent_escapes_details(text: str) -> tuple[str, str | None]:
+    """Decode nested percent escapes to a bounded fixed point.
+
+    The destination dialect needs repeated decoding for nested ``%25`` path
+    separators, but an attacker must not turn that into unbounded rescanning.
+    Each pass spends the length of its input from one linear work budget.  A
+    residual encoded separator/control or an exhausted budget is diagnostic
+    evidence and therefore fails closed at topology validation.
+    """
+
     decoded = text
-    for _ in range(4):
+    original_length = max(1, len(text))
+    work_budget = max(
+        PERCENT_DECODE_MIN_BUDGET,
+        original_length * PERCENT_DECODE_WORK_FACTOR,
+    )
+    max_passes = max(8, min(PERCENT_DECODE_MAX_PASSES, original_length + 1))
+    work = 0
+    passes = 0
+    diagnostic: str | None = None
+    while True:
+        if passes >= max_passes:
+            diagnostic = "percent decoding exceeded bounded fixed-point passes"
+            break
+        work += len(decoded)
+        if work > work_budget:
+            diagnostic = "percent decoding exceeded bounded linear work budget"
+            break
         next_value = unquote(decoded)
+        passes += 1
         if next_value == decoded:
-            return decoded
+            break
         decoded = next_value
+    if ENCODED_PATH_CONTROL_RE.search(decoded) is not None:
+        residual = "residual encoded path separator or dot control after percent decoding"
+        diagnostic = f"{diagnostic}; {residual}" if diagnostic else residual
+    return decoded, diagnostic
+
+
+def _decode_percent_escapes(text: str) -> str:
+    """Compatibility wrapper returning the bounded decoder's best value."""
+
+    decoded, _ = _decode_percent_escapes_details(text)
     return decoded
 
 
@@ -780,7 +831,9 @@ def _normalize_markdown_target_details(
     target = _decode_html_entities(raw_target.strip())
     if target.startswith("<") and target.endswith(">"):
         target = target[1:-1].strip()
-    target = _decode_percent_escapes(target)
+    if not target or target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
+        return None, None
+    target, percent_diagnostic = _decode_percent_escapes_details(target)
     if not target or target.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", target):
         return None, None
     target = re.split(r"[?#]", target, maxsplit=1)[0]
@@ -813,6 +866,12 @@ def _normalize_markdown_target_details(
         diagnostic = "local Markdown destination has a file-shaped path suffix or trailing separator"
     else:
         diagnostic = None
+    if percent_diagnostic is not None:
+        diagnostic = (
+            f"{diagnostic}; {percent_diagnostic}"
+            if diagnostic is not None
+            else percent_diagnostic
+        )
     return normalized, diagnostic
 
 
@@ -942,6 +1001,12 @@ def _raw_html_diagnostics_for_rendered_lines(lines: list[str]) -> list[str]:
             continue
         marker = _line_fence_marker(line)
         if marker is not None:
+            if pending_kind is not None:
+                if pending_kind == "link":
+                    add_all(["unterminated raw HTML link tag opener"])
+                else:
+                    add_all(["unterminated raw HTML heading tag opener"])
+                add_all(["raw HTML opener was interrupted by a fenced code block"])
             pending_kind = None
             fence_char, fence_length = marker
             inline_code_length = None
@@ -1096,10 +1161,11 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
 
     normalized: list[str] = []
     diagnostics: list[str] = []
-    # Entries are (marker-start column, content-start column, paragraph-open).
-    # Keeping the open-paragraph bit with each item prevents a blank-separated
-    # code block from borrowing the state of a sibling container.
-    list_stack: list[tuple[int, int, bool]] = []
+    # Entries are (marker-start, content-start, paragraph-open, quote-depth,
+    # quote-open, quote-blank-pending).  The quote state is kept with the
+    # active list item because a blockquote marker may be indented relative to
+    # that item's content start rather than visible at document level.
+    list_stack: list[tuple[int, int, bool, int, bool, bool]] = []
 
     list_blank_pending = False
     lazy_continuation_active = False
@@ -1147,7 +1213,18 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
             paragraph_open = bool(content.strip()) and not _is_block_boundary_line(content)
             if LIST_ITEM_RE.match(content) is not None:
                 paragraph_open = False
-            list_stack.append((marker_start, content_start, paragraph_open))
+            _, quote_depth = _strip_blockquote_prefixes(list_match.group(4))
+            quote_open = quote_depth > 0 and paragraph_open
+            list_stack.append(
+                (
+                    marker_start,
+                    content_start,
+                    paragraph_open,
+                    quote_depth,
+                    quote_open,
+                    False,
+                )
+            )
             normalized.append(content)
             if blockquote_count > 0:
                 blockquote_paragraph_open = paragraph_open
@@ -1163,6 +1240,19 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
             if blockquote_count > 0:
                 blockquote_paragraph_open = False
                 blockquote_blank_pending = True
+                for index in range(len(list_stack) - 1, -1, -1):
+                    marker_start, content_start, item_open, quote_depth, _, _ = list_stack[index]
+                    if quote_depth > 0:
+                        list_stack[index] = (
+                            marker_start,
+                            content_start,
+                            item_open,
+                            quote_depth,
+                            False,
+                            True,
+                        )
+                        list_blank_pending = False
+                        break
             elif not list_stack:
                 paragraph_active = False
             continue
@@ -1188,7 +1278,7 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                 candidate_index = max(
                     (
                         index
-                        for index, (_, content_start, _) in enumerate(list_stack)
+                        for index, (_, content_start, _, _, _, _) in enumerate(list_stack)
                         if leading_spaces >= content_start
                     ),
                     default=-1,
@@ -1202,15 +1292,88 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                         "ambiguous lazy list continuation before indented content"
                     )
                     lazy_continuation_active = False
+                candidate = line[1:] if line.startswith("\t") else line[candidate_indent:]
+                (
+                    item_marker,
+                    item_content_start,
+                    item_paragraph_open,
+                    item_quote_depth,
+                    item_quote_open,
+                    item_quote_blank_pending,
+                ) = list_stack[candidate_index]
+                relative_content, relative_quote_count = _strip_blockquote_prefixes(
+                    candidate
+                )
+                if (
+                    blockquote_count == 0
+                    and relative_quote_count > 0
+                    and item_quote_depth >= relative_quote_count
+                ):
+                    # The quote marker is relative to the selected list
+                    # item's content column (not the document root).  Keep
+                    # its paragraph/blank state with that combined container.
+                    list_stack = list_stack[: candidate_index + 1]
+                    if not relative_content.strip():
+                        normalized.append(_RenderedLine("", indented_code=True))
+                        list_stack[candidate_index] = (
+                            item_marker,
+                            item_content_start,
+                            item_paragraph_open,
+                            item_quote_depth,
+                            False,
+                            True,
+                        )
+                        paragraph_active = False
+                        root_indented_code_active = True
+                    elif item_quote_open and not item_quote_blank_pending:
+                        normalized.append(
+                            _RenderedLine(
+                                relative_content.lstrip(" \t"),
+                                paragraph_continuation=True,
+                            )
+                        )
+                        list_stack[candidate_index] = (
+                            item_marker,
+                            item_content_start,
+                            item_paragraph_open,
+                            item_quote_depth,
+                            True,
+                            False,
+                        )
+                        paragraph_active = True
+                        root_indented_code_active = False
+                    else:
+                        normalized.append(
+                            _RenderedLine(relative_content, indented_code=True)
+                        )
+                        list_stack[candidate_index] = (
+                            item_marker,
+                            item_content_start,
+                            item_paragraph_open,
+                            item_quote_depth,
+                            False,
+                            True,
+                        )
+                        paragraph_active = False
+                        root_indented_code_active = True
+                    list_blank_pending = False
+                    continue
                 if blockquote_count > 0:
                     # A blockquote marker can continue an outer list item
                     # after the marker was already established on the item
                     # line (for example ``- > paragraph``).  Its blank line
                     # state belongs to that list item's paragraph, not to the
                     # root list-content indentation after the quote marker.
-                    item_paragraph_open = list_stack[candidate_index][2]
                     list_stack = list_stack[: candidate_index + 1]
-                    if item_paragraph_open and not list_blank_pending:
+                    visible_quote_continuation = (
+                        item_paragraph_open
+                        and (
+                            item_quote_open
+                            if item_quote_depth > 0
+                            else not list_blank_pending
+                        )
+                    )
+                    if visible_quote_continuation:
                         normalized.append(
                             _RenderedLine(
                                 line.lstrip(" \t"),
@@ -1220,6 +1383,14 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                         list_blank_pending = False
                         paragraph_active = True
                         root_indented_code_active = False
+                        list_stack[candidate_index] = (
+                            item_marker,
+                            item_content_start,
+                            item_paragraph_open,
+                            item_quote_depth,
+                            True if item_quote_depth > 0 else item_quote_open,
+                            False,
+                        )
                     else:
                         normalized.append(
                             _RenderedLine(line, indented_code=True)
@@ -1227,8 +1398,15 @@ def _container_normalized_lines_with_diagnostics(text: str) -> tuple[list[str], 
                         list_blank_pending = False
                         paragraph_active = False
                         root_indented_code_active = True
+                        list_stack[candidate_index] = (
+                            item_marker,
+                            item_content_start,
+                            item_paragraph_open,
+                            item_quote_depth,
+                            False,
+                            True if item_quote_depth > 0 else item_quote_blank_pending,
+                        )
                     continue
-                candidate = line[1:] if line.startswith("\t") else line[candidate_indent:]
                 if INVALID_LIST_SPACING_RE.match(candidate):
                     diagnostics.append("list marker has more than four spaces after its marker")
                     normalized.append("    " + candidate.lstrip())
@@ -1395,7 +1573,7 @@ def _strip_blockquote_prefixes(line: str) -> tuple[str, int]:
 def _accept_list_marker(
     marker_start: int,
     marker: str,
-    list_stack: list[tuple[int, int, bool]],
+    list_stack: list[tuple[int, int, bool, int, bool, bool]],
     diagnostics: list[str],
     paragraph_active: bool,
 ) -> bool:
@@ -1404,7 +1582,7 @@ def _accept_list_marker(
             diagnostics.append("ordered list marker other than one cannot interrupt a paragraph")
             return False
         return marker_start <= 3
-    parent_marker, parent_content, _ = list_stack[-1]
+    parent_marker, parent_content, _, _, _, _ = list_stack[-1]
     if marker_start > parent_marker and marker_start < parent_content:
         diagnostics.append("ambiguous list marker indentation")
     return marker_start == 0 or marker_start >= parent_content
