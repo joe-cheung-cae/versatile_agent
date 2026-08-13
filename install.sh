@@ -116,6 +116,15 @@ done
 command -v python3 >/dev/null 2>&1 || { printf 'python3 is required for safe TOML merge and validation.\n' >&2; exit 2; }
 python3 -c 'import tomllib' >/dev/null 2>&1 || { printf 'Python 3.11 or newer is required (tomllib is unavailable).\n' >&2; exit 2; }
 
+shopt -s nullglob
+common_agent_files=("$common_agents_source"/*.toml)
+shopt -u nullglob
+common_agent_count="${#common_agent_files[@]}"
+[[ "$common_agent_count" -eq 13 ]] || {
+  printf 'Expected 13 common agents, found %s in %s\n' "$common_agent_count" "$common_agents_source" >&2
+  exit 2
+}
+
 case "$scope" in
   global) scope="user" ;;
   project|user) ;;
@@ -147,16 +156,6 @@ fi
 if [[ "$profile" == "auto" ]]; then
   profile="$($detector "${profile_args[@]}")"
 fi
-
-case "$profile" in
-  luna-v1|luna-v2)
-    profile_source="$payload_root/agents/profiles/luna-v1"
-    ;;
-  terra-fallback)
-    profile_source="$payload_root/agents/profiles/terra-fallback"
-    ;;
-esac
-[[ -f "$profile_source/docs_researcher.toml" ]] || { printf 'Missing profile payload: %s\n' "$profile_source" >&2; exit 2; }
 
 if [[ "$scope" == "project" ]]; then
   [[ -n "$target_path" ]] || target_path="$PWD"
@@ -198,17 +197,13 @@ if [[ "$check_only" == "true" ]]; then
     printf 'Skill installation is missing or stale: %s\n' "$skill_destination" >&2
     status=1
   fi
-  for source_file in "$common_agents_source"/*.toml; do
+  for source_file in "${common_agent_files[@]}"; do
     destination_file="$agent_destination/$(basename "$source_file")"
     if ! cmp -s "$source_file" "$destination_file"; then
       printf 'Agent installation is missing or stale: %s\n' "$destination_file" >&2
       status=1
     fi
   done
-  if ! cmp -s "$profile_source/docs_researcher.toml" "$agent_destination/docs_researcher.toml"; then
-    printf 'Routing profile is missing or stale: %s\n' "$agent_destination/docs_researcher.toml" >&2
-    status=1
-  fi
   if [[ "$manage_config" == "true" ]] && ! python3 "$merge_config" --check "$config_destination"; then
     status=1
   fi
@@ -236,7 +231,7 @@ fi
 
 if [[ "$dry_run" == "true" ]]; then
   printf 'Would install skill: %s\n' "$skill_destination"
-  printf 'Would install 12 agents: %s\n' "$agent_destination"
+  printf 'Would install %s agents: %s\n' "$common_agent_count" "$agent_destination"
   [[ "$manage_config" == "true" ]] && printf 'Would merge [agents] settings: %s\n' "$config_destination"
   [[ "$with_agents_snippet" == "true" ]] && printf 'Would ensure AGENTS.md snippet: %s\n' "$agents_md_destination"
   printf 'Selected profile: %s\n' "$profile"
@@ -272,7 +267,7 @@ if [[ ! -d "$skill_destination" ]] || ! diff -qr "$skill_source" "$skill_destina
 fi
 
 mkdir -p "$agent_destination"
-for source_file in "$common_agents_source"/*.toml; do
+for source_file in "${common_agent_files[@]}"; do
   filename="$(basename "$source_file")"
   destination_file="$agent_destination/$filename"
   if ! cmp -s "$source_file" "$destination_file"; then
@@ -280,12 +275,6 @@ for source_file in "$common_agents_source"/*.toml; do
     install -m 0644 "$source_file" "$destination_file"
   fi
 done
-
-docs_destination="$agent_destination/docs_researcher.toml"
-if ! cmp -s "$profile_source/docs_researcher.toml" "$docs_destination"; then
-  backup_path "$docs_destination" "agents/docs_researcher.toml"
-  install -m 0644 "$profile_source/docs_researcher.toml" "$docs_destination"
-fi
 
 if [[ "$manage_config" == "true" ]]; then
   if ! python3 "$merge_config" --check "$config_destination" >/dev/null 2>&1; then
@@ -330,7 +319,7 @@ printf 'Installed Versatile Agent %s\n' "$version"
 printf '  scope:   %s\n' "$scope"
 printf '  profile: %s\n' "$profile"
 printf '  skill:   %s\n' "$skill_destination"
-printf '  agents:  %s\n' "$agent_destination"
+printf '  agents:  %s common custom agents at %s\n' "$common_agent_count" "$agent_destination"
 printf '  manifest:%s\n' " $manifest_destination"
 if [[ "$backup_created" == "true" ]]; then
   printf '  backup:  %s\n' "$backup_destination"

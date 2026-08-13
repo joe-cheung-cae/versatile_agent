@@ -26,7 +26,10 @@ EXPECTED_COMMON = {
     "parallelism_reviewer",
     "performance_profiler",
     "security_reviewer",
+    "docs_researcher_luna",
+    "docs_researcher_terra",
 }
+EXPECTED_COMMON_FILES = {f"{name}.toml" for name in EXPECTED_COMMON}
 
 
 class Validation:
@@ -89,24 +92,32 @@ def validate_skill(root: Path, check: Validation) -> None:
 
 def validate_agents(root: Path, check: Validation) -> None:
     common_dir = root / "payload/agents/common"
-    common_data = [parse_agent(path, check) for path in sorted(common_dir.glob("*.toml"))]
-    common_names = {str(item.get("name")) for item in common_data if item}
-    check.require(common_names == EXPECTED_COMMON, f"common agent set mismatch: {sorted(common_names)}")
+    common_paths = sorted(common_dir.glob("*.toml"))
+    common_data = {path.name: parse_agent(path, check) for path in common_paths}
+    common_files = set(common_data)
+    check.require(
+        common_files == EXPECTED_COMMON_FILES,
+        f"common agent files mismatch: {sorted(common_files)}",
+    )
 
-    luna_path = root / "payload/agents/profiles/luna-v1/docs_researcher.toml"
-    terra_path = root / "payload/agents/profiles/terra-fallback/docs_researcher.toml"
-    luna = parse_agent(luna_path, check)
-    terra = parse_agent(terra_path, check)
-    check.require(luna.get("name") == "docs_researcher", "Luna profile must provide docs_researcher")
-    check.require(luna.get("model") == "gpt-5.6-luna", "Luna profile must pin gpt-5.6-luna")
-    check.require(luna.get("model_reasoning_effort") == "max", "Luna profile must use max effort")
-    check.require(terra.get("name") == "docs_researcher", "Terra fallback must provide docs_researcher")
-    check.require(terra.get("model") == "gpt-5.6-terra", "Fallback profile must pin gpt-5.6-terra")
-    check.require(terra.get("model_reasoning_effort") == "high", "Fallback profile must use high effort")
+    common_names = [str(item.get("name")) for item in common_data.values() if item]
+    check.require(len(common_paths) == 13, f"common agent set must contain exactly 13 TOMLs, found {len(common_paths)}")
+    check.require(
+        len(common_names) == len(set(common_names)),
+        f"common agent names must be unique: {sorted(common_names)}",
+    )
+    check.require(set(common_names) == EXPECTED_COMMON, f"common agent names mismatch: {sorted(common_names)}")
 
-    for profile_name, profile_data in (("luna-v1", luna), ("terra-fallback", terra)):
-        names = common_names | ({str(profile_data.get("name"))} if profile_data else set())
-        check.require(len(names) == 12, f"{profile_name} must resolve to exactly 12 unique agents, found {len(names)}")
+    researcher_pins = {
+        "docs_researcher_luna.toml": ("docs_researcher_luna", "gpt-5.6-luna", "max"),
+        "docs_researcher_terra.toml": ("docs_researcher_terra", "gpt-5.6-terra", "high"),
+    }
+    for filename, (name, model, effort) in researcher_pins.items():
+        data = common_data.get(filename, {})
+        check.require(data.get("name") == name, f"{filename} must provide {name}")
+        check.require(data.get("model") == model, f"{filename} must pin {model}")
+        check.require(data.get("model_reasoning_effort") == effort, f"{filename} must use {effort} effort")
+        check.require(data.get("sandbox_mode") == "read-only", f"{filename} must use read-only sandbox")
 
 
 def validate_root(root: Path, check: Validation) -> None:
@@ -157,7 +168,7 @@ def main() -> int:
             print(f"ERROR: {error}", file=sys.stderr)
         print(f"Bundle validation failed with {len(check.errors)} error(s).", file=sys.stderr)
         return 1
-    print("Bundle validation passed: skill + 12-agent Luna/Terra profile matrix.")
+    print("Bundle validation passed: skill + 13-agent dual-researcher bundle.")
     return 0
 
 
