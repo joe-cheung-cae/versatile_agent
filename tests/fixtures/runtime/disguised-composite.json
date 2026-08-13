@@ -1,0 +1,19 @@
+{
+  "records": [
+    {
+      "binary_path": "",
+      "captured_at": "2026-08-08T00:00:00Z",
+      "diagnostic_only": false,
+      "effort_support": {},
+      "evidence_source": "capture:cli+app",
+      "exposed_agent_types": [],
+      "interface_kind": "native_spawn_attempt",
+      "model_support": [],
+      "multi_agent_generation": "none",
+      "runtime_id": "fixture-disguised-composite",
+      "schema_version": 1,
+      "version": "unknown"
+    }
+  ],
+  "schema_version": 1
+}

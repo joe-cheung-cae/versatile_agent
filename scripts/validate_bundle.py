@@ -30,6 +30,38 @@ EXPECTED_COMMON = {
     "docs_researcher_terra",
 }
 EXPECTED_COMMON_FILES = {f"{name}.toml" for name in EXPECTED_COMMON}
+RUNTIME_RECORD_FIXTURES = {
+    "app-task.json",
+    "cli-and-app-records.json",
+    "app-task-provenance-on-native.json",
+    "native-route-mismatch.json",
+    "native-provenance-on-app-task.json",
+    "disguised-composite.json",
+    "duplicate-runtime-id.json",
+    "document-schema-bool.json",
+    "generation-list.json",
+    "mismatched-provenance.json",
+    "missing-field.json",
+    "mixed-evidence.json",
+    "native-effective-unknown.json",
+    "native-effective-support-conflict.json",
+    "native-partial-effective-mismatch.json",
+    "native-observed-null.json",
+    "native-padded-effective.json",
+    "native-request-only.json",
+    "native-spawn.json",
+    "native-whitespace-effective.json",
+    "native-assertion-list.json",
+    "native-assertion-primitive.json",
+    "record-schema-float.json",
+    "unknown-fact.json",
+    "unknown-model-known-effort.json",
+    "app-luna-only.sh",
+    "app-v1-luna.sh",
+    "cli-v1-luna.sh",
+    "cli-v2-luna.sh",
+    "cli-v2-no-luna.sh",
+}
 
 
 class Validation:
@@ -126,6 +158,26 @@ def validate_agents(root: Path, check: Validation) -> None:
         check.require(data.get("sandbox_mode") == "read-only", f"{filename} must use read-only sandbox")
 
 
+def validate_runtime_records(root: Path, check: Validation) -> None:
+    helper = root / "payload/skills/versatile-dev/scripts/runtime_records.py"
+    focused_test = root / "tests/test_runtime_records.py"
+    check.require(helper.is_file(), f"missing runtime-record helper: {helper}")
+    check.require(focused_test.is_file(), f"missing runtime-record test: {focused_test}")
+    for path in (helper, focused_test):
+        if path.is_file():
+            try:
+                compile(path.read_text(encoding="utf-8"), str(path), "exec")
+            except (OSError, SyntaxError) as exc:
+                check.errors.append(f"invalid Python runtime-record file {path}: {exc}")
+
+    fixture_dir = root / "tests/fixtures/runtime"
+    actual_fixtures = {path.name for path in fixture_dir.iterdir()} if fixture_dir.is_dir() else set()
+    check.require(
+        actual_fixtures == RUNTIME_RECORD_FIXTURES,
+        f"runtime fixture set mismatch: {sorted(actual_fixtures)}",
+    )
+
+
 def validate_root(root: Path, check: Validation) -> None:
     for relative in (
         "VERSION",
@@ -168,6 +220,7 @@ def main() -> int:
     validate_root(root, check)
     validate_skill(root, check)
     validate_agents(root, check)
+    validate_runtime_records(root, check)
 
     if check.errors:
         for error in check.errors:

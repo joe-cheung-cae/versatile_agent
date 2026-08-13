@@ -1,0 +1,55 @@
+{
+  "diagnostic_assertions": {
+    "native_v2_luna": {
+      "diagnostic_only": true,
+      "evidence_source": {
+        "kind": "argument_assertion",
+        "scope": "diagnostic-only"
+      },
+      "value": "yes"
+    }
+  },
+  "records": [
+    {
+      "binary_path": "/fixtures/codex-cli",
+      "captured_at": "2026-08-08T00:00:00Z",
+      "diagnostic_only": true,
+      "effort_support": {
+        "gpt-5.6-terra": ["high"]
+      },
+      "evidence_source": {
+        "kind": "fixture_cli_binary",
+        "runtime_id": "fixture-cli-v2",
+        "scope": "single-runtime"
+      },
+      "exposed_agent_types": [],
+      "interface_kind": "cli_binary",
+      "model_support": ["gpt-5.6-terra"],
+      "multi_agent_generation": "v2",
+      "runtime_id": "fixture-cli-v2",
+      "schema_version": 1,
+      "version": "fixture-v2"
+    },
+    {
+      "binary_path": "/fixtures/chatgpt-codex",
+      "captured_at": "2026-08-08T00:00:00Z",
+      "diagnostic_only": true,
+      "effort_support": {
+        "gpt-5.6-luna": ["max"]
+      },
+      "evidence_source": {
+        "kind": "fixture_app_bundled_cli",
+        "runtime_id": "fixture-app-luna-only",
+        "scope": "single-runtime"
+      },
+      "exposed_agent_types": [],
+      "interface_kind": "app_bundled_cli",
+      "model_support": ["gpt-5.6-luna"],
+      "multi_agent_generation": "none",
+      "runtime_id": "fixture-app-luna-only",
+      "schema_version": 1,
+      "version": "fixture-luna-only"
+    }
+  ],
+  "schema_version": 1
+}

@@ -1,0 +1,41 @@
+{
+  "records": [
+    {
+      "binary_path": "/fixtures/one",
+      "captured_at": "2026-08-08T00:00:00Z",
+      "diagnostic_only": true,
+      "effort_support": {},
+      "evidence_source": {
+        "kind": "fixture_cli_binary",
+        "runtime_id": "fixture-duplicate",
+        "scope": "single-runtime"
+      },
+      "exposed_agent_types": [],
+      "interface_kind": "cli_binary",
+      "model_support": [],
+      "multi_agent_generation": "none",
+      "runtime_id": "fixture-duplicate",
+      "schema_version": 1,
+      "version": "one"
+    },
+   {
+     "binary_path": "/fixtures/two",
+     "captured_at": "2026-08-08T00:00:00Z",
+     "diagnostic_only": true,
+     "effort_support": {},
+     "evidence_source": {
+        "kind": "fixture_app_bundled_cli",
+        "runtime_id": "fixture-duplicate",
+        "scope": "single-runtime"
+      },
+      "exposed_agent_types": [],
+      "interface_kind": "app_bundled_cli",
+      "model_support": [],
+      "multi_agent_generation": "none",
+      "runtime_id": "fixture-duplicate",
+      "schema_version": 1,
+      "version": "two"
+    }
+  ],
+  "schema_version": 1
+}

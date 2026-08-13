@@ -1,0 +1,23 @@
+{
+  "records": [
+    {
+      "binary_path": "",
+      "captured_at": "2026-08-08T00:00:00Z",
+      "diagnostic_only": false,
+      "effort_support": {},
+      "evidence_source": {
+        "kind": "native_spawn_details",
+        "runtime_id": "fixture-native-provenance-on-app-task",
+        "scope": "single-runtime"
+      },
+      "exposed_agent_types": [],
+      "interface_kind": "app_task",
+      "model_support": [],
+      "multi_agent_generation": "unknown",
+      "runtime_id": "fixture-native-provenance-on-app-task",
+      "schema_version": 1,
+      "version": "unknown"
+    }
+  ],
+  "schema_version": 1
+}
