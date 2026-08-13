@@ -420,7 +420,7 @@ def _precheck(output: dict[str, Any], document: dict[str, Any], event: dict[str,
             evidence=evidence,
         )
         return
-    if record["interface_kind"] != "native_spawn_attempt":
+    if record["interface_kind"] not in {"native_spawn_attempt", "native_capability_inventory"}:
         _set_decision(
             output,
             state=STATE_STOP_UNVERIFIED,

@@ -1,6 +1,6 @@
 ---
 name: versatile-dev
-description: Use for non-trivial repository engineering needing mapping, planning, implementation, tests, independent review, acceptance, or targeted CUDA/HPC/numerical/security specialists. Do not use for simple Q&A or status-only work. Probes and App tasks are not native effective evidence; this Skill does not change the parent model or permissions, guarantee model availability, or perform automatic CLI model switching or fallback.
+description: Use for non-trivial repository engineering needing mapping, planning, implementation, tests, independent review, acceptance, targeted CUDA/HPC/numerical/security specialists, or native documentation research, vendor research, or API research (Luna-first / Terra-second). Do not use for simple Q&A or status-only work, including diagnostic status questions.
 ---
 
 # Versatile Development

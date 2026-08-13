@@ -144,6 +144,7 @@ class SkillContractTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertIn("non-trivial repository engineering", block or "")
         self.assertIn("Do not use for simple Q&A or status-only work", block or "")
+        self.assertIn("documentation research", block or "")
         self.assertIn("$versatile-dev", self.ui)
         self.assertTrue(VALIDATOR.openai_yaml_violations(self.ui) == [])
         self.assert_semantic_rejects(self.skill.replace("mapping, planning", "mapping"))
@@ -1117,7 +1118,7 @@ class SkillContractTests(unittest.TestCase):
             self.ui.replace('default_prompt: "', 'default_prompt: `', 1),
             self.ui.replace('default_prompt: "', 'default_prompt: "<!-- ', 1),
             self.ui.replace('default_prompt: "', 'default_prompt: |\n', 1),
-            self.ui.replace("engineering work", "engineering drift", 1),
+            self.ui.replace("status-only work", "status-only drift", 1),
             self.ui.replace("$versatile-dev", "versatile-dev"),
         )
         for case in cases:

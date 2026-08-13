@@ -58,8 +58,11 @@ findings, and confirms scope. Only the lead declares the user task complete.
 
 ## Concurrency
 
-- Run independent exploration, documentation, test analysis, log analysis, and
-  specialist review concurrently.
+- Independent exploration, test analysis, log analysis, and specialist review
+  may still run concurrently.
+- Exclude `docs_researcher_luna` and `docs_researcher_terra` from concurrent
+  documentation. Native docs research is PRECHECK then Luna then at most one
+  Terra.
 - Keep overlapping code changes serial under one writer.
 - If writers are disjoint, name exact owned paths and the later integration
   order before spawning them.

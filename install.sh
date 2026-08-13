@@ -18,6 +18,7 @@ check_only="false"
 dry_run="false"
 with_agents_snippet="false"
 manage_config="true"
+force_config="false"
 user_home="${HOME:?HOME is required}"
 codex_home_override=""
 codex_binary="${CODEX_BIN:-}"
@@ -43,6 +44,7 @@ Routing:
 Behavior:
   --with-agents-snippet         Append an idempotent AGENTS.md activation note.
   --no-config                   Do not merge managed [agents] settings.
+  --force-config                Replace present managed [agents] keys with bundle defaults.
   --check                       Verify an existing installation without writing.
   --dry-run                     Print intended changes without writing.
   -h, --help
@@ -89,6 +91,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-config)
       manage_config="false"
+      shift
+      ;;
+    --force-config)
+      force_config="true"
       shift
       ;;
     --check)
@@ -260,6 +266,11 @@ if [[ "$check_only" == "true" && "$legacy_state" == "KNOWN_HISTORICAL" ]]; then
   exit 1
 fi
 
+merge_config_cmd=(python3 "$merge_config")
+if [[ "$force_config" == "true" ]]; then
+  merge_config_cmd+=(--force-config)
+fi
+
 if [[ "$check_only" == "true" ]]; then
   status=0
   if ! diff -qr "$skill_source" "$skill_destination" >/dev/null 2>&1; then
@@ -273,7 +284,7 @@ if [[ "$check_only" == "true" ]]; then
       status=1
     fi
   done
-  if [[ "$manage_config" == "true" ]] && ! python3 "$merge_config" --check "$config_destination"; then
+  if [[ "$manage_config" == "true" ]] && ! "${merge_config_cmd[@]}" --check "$config_destination"; then
     status=1
   fi
   if [[ "$with_agents_snippet" == "true" ]] && ! python3 "$ensure_snippet" --check "$agents_md_destination" "$payload_root/AGENTS.md.snippet"; then
@@ -427,9 +438,9 @@ for source_file in "${common_agent_files[@]}"; do
 done
 
 if [[ "$manage_config" == "true" ]]; then
-  if ! python3 "$merge_config" --check "$config_destination" >/dev/null 2>&1; then
+  if ! "${merge_config_cmd[@]}" --check "$config_destination" >/dev/null 2>&1; then
     backup_path "$config_destination" "config.toml"
-    python3 "$merge_config" "$config_destination"
+    "${merge_config_cmd[@]}" "$config_destination"
   fi
 fi
 

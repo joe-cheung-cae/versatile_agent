@@ -73,9 +73,11 @@ capability/diagnostic evidence，并必须标记 `diagnostic_only=true`。即使
 ## 目标 native 状态与失败分类
 
 目标 pair 的 `PRECHECK` 先于任何 spawn：同一 active native interface 必须
-同时暴露 `docs_researcher_luna` 和 `docs_researcher_terra`。exposure metadata
-缺失、不可观测，或只暴露其中一个 type 时，立即 `STOP_UNVERIFIED`；不得
-spawn Luna、Terra 或 alternate role。此时不存在可分类的 Luna attempt。
+同时暴露 `docs_researcher_luna` 和 `docs_researcher_terra`。同一 interface 上
+Codex-observable 的 parent-authored native capability inventory 是合法的
+exposure 能力证据。exposure metadata 缺失、不可观测，或只暴露其中一个
+type 时，立即 `STOP_UNVERIFIED`；不得 spawn Luna、Terra 或 alternate role。
+此时不存在可分类的 Luna attempt。
 
 PRECHECK 成功后才可 spawn Luna。只有该次 Luna native spawn 从**同一
 interface** 返回明确且可归因的 routing rejection，才是

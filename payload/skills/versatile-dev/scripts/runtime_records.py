@@ -17,13 +17,16 @@ Required record fields:
     Binary identity.  Non-binary interfaces use an explicit empty path and
     ``unknown`` version.
 ``interface_kind``
-    One of ``cli_binary``, ``app_bundled_cli``, ``native_spawn_attempt``, or
-    ``app_task``.
+    One of ``cli_binary``, ``app_bundled_cli``, ``native_spawn_attempt``,
+    ``native_capability_inventory``, or ``app_task``.
+    ``native_capability_inventory`` is a closed parent-authored inventory of
+    custom-agent names discovered on the current native spawn interface.
 ``multi_agent_generation``
     One of ``none``, ``v1``, ``v2``, or ``unknown``.
 ``exposed_agent_types``
     A list, or the explicit value ``unknown``.  Detector records use an empty
     list because a CLI capability probe is not native exposure evidence.
+    Inventory records may list discovered custom-agent names.
 ``model_support`` / ``effort_support``
     Model slugs and a model-to-efforts mapping, or explicit ``unknown``.
 ``evidence_source``
@@ -37,7 +40,8 @@ Optional native/App-task observations live inside that same record under
 ``observed``. Plain ``agent_type``/``model``/``effort`` values are requested or
 non-effective observations. Native effective queries require the exact
 ``effective_agent_type``/``effective_model``/``effective_effort`` fields from a
-single ``native_spawn_attempt`` record. Requested and effective values may
+single ``native_spawn_attempt`` record. A capability inventory never carries
+``observed`` and cannot satisfy those queries. Requested and effective values may
 differ; that is valid native-routing evidence and query-time mismatch evidence.
 The query operation always selects one ``runtime_id`` before checking facts, so
 it cannot assemble a route from complementary records.
@@ -84,15 +88,21 @@ INTERFACE_KINDS = {
     "cli_binary",
     "app_bundled_cli",
     "native_spawn_attempt",
+    "native_capability_inventory",
     "app_task",
 }
 PROBE_KINDS = {"cli_binary", "app_bundled_cli"}
+NON_BINARY_INTERFACE_KINDS = {"native_spawn_attempt", "native_capability_inventory", "app_task"}
 GENERATION_VALUES = {"none", "v1", "v2", "unknown"}
 UNKNOWN = "unknown"
 EVIDENCE_SOURCE_KINDS = {
     "cli_binary": {"detector_probe", "fixture_cli_binary"},
     "app_bundled_cli": {"detector_probe", "fixture_app_bundled_cli"},
     "native_spawn_attempt": {"native_spawn_details", "fixture_native_spawn_attempt"},
+    "native_capability_inventory": {
+        "native_interface_inventory",
+        "fixture_native_capability_inventory",
+    },
     "app_task": {"app_task_details", "fixture_app_task"},
 }
 EVIDENCE_SOURCE_FIELDS = {"kind", "runtime_id", "scope"}
@@ -108,7 +118,8 @@ INTERFACE_ORDER = {
     "cli_binary": 0,
     "app_bundled_cli": 1,
     "native_spawn_attempt": 2,
-    "app_task": 3,
+    "native_capability_inventory": 3,
+    "app_task": 4,
 }
 
 
@@ -167,6 +178,8 @@ def _validate_evidence_source(value: Any, location: str, runtime_id: str, interf
 def _validate_observed(record: dict[str, Any], location: str) -> None:
     if "observed" not in record:
         return
+    if record["interface_kind"] == "native_capability_inventory":
+        raise _fail(location, "native capability inventory may not contain observations")
     observed = record["observed"]
     if observed is None:
         raise _fail(location, "must be an object; null is not valid")
@@ -250,7 +263,7 @@ def validate_record(record: Any, index: int = 0) -> dict[str, Any]:
         raise _fail(f"{location}.diagnostic_only", "must be boolean")
     if record["interface_kind"] in PROBE_KINDS and not record["diagnostic_only"]:
         raise _fail(location, "CLI/App-bundled CLI probe records must be diagnostic_only=true")
-    if record["interface_kind"] in {"native_spawn_attempt", "app_task"} and record["binary_path"] not in {"", UNKNOWN}:
+    if record["interface_kind"] in NON_BINARY_INTERFACE_KINDS and record["binary_path"] not in {"", UNKNOWN}:
         raise _fail(location, "non-binary interfaces require an explicit empty/unknown binary_path")
     _validate_observed(record, location)
     return record

@@ -414,12 +414,22 @@ assert_dual_researcher_bundle "$project_luna/.codex/agents"
 assert_contains "$project_luna/.codex/config.toml" 'model = "keep-me"'
 assert_contains "$project_luna/.codex/config.toml" 'custom_key = "preserve"'
 assert_contains "$project_luna/.codex/config.toml" 'example = true'
-assert_contains "$project_luna/.codex/config.toml" 'max_concurrent_threads_per_session = 6'
+assert_contains "$project_luna/.codex/config.toml" 'max_concurrent_threads_per_session = 2'
 assert_contains "$project_luna/AGENTS.md" '## Versatile development workflow'
 
 find "$project_luna" -maxdepth 1 -type d -name '.codex-versatile-backup-*' | grep -q . || fail "expected config backup"
 assert_manifest_rewrite legacy
 assert_manifest_rewrite extra
+
+if "$bundle_root/install.sh" \
+  --scope project \
+  --target "$project_luna" \
+  --profile luna-v1 \
+  --with-agents-snippet \
+  --check \
+  --force-config >/dev/null 2>&1; then
+  fail "check --force-config must fail when managed values differ from defaults"
+fi
 
 "$bundle_root/install.sh" \
   --scope project \
@@ -436,6 +446,24 @@ backup_count_before="$(find "$project_luna" -maxdepth 1 -type d -name '.codex-ve
   --with-agents-snippet >/dev/null
 backup_count_after="$(find "$project_luna" -maxdepth 1 -type d -name '.codex-versatile-backup-*' | wc -l | tr -d '[:space:]')"
 [[ "$backup_count_before" == "$backup_count_after" ]] || fail "idempotent reinstall created an unnecessary backup"
+assert_contains "$project_luna/.codex/config.toml" 'max_concurrent_threads_per_session = 2'
+
+"$bundle_root/install.sh" \
+  --scope project \
+  --target "$project_luna" \
+  --profile luna-v1 \
+  --with-agents-snippet \
+  --force-config >/dev/null
+assert_contains "$project_luna/.codex/config.toml" 'max_concurrent_threads_per_session = 6'
+assert_contains "$project_luna/.codex/config.toml" 'custom_key = "preserve"'
+assert_contains "$project_luna/.codex/config.toml" 'model = "keep-me"'
+"$bundle_root/install.sh" \
+  --scope project \
+  --target "$project_luna" \
+  --profile luna-v1 \
+  --with-agents-snippet \
+  --check \
+  --force-config
 
 marker_count="$(grep -Fc '## Versatile development workflow' "$project_luna/AGENTS.md")"
 [[ "$marker_count" == "1" ]] || fail "AGENTS.md snippet must be idempotent"

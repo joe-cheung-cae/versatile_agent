@@ -693,6 +693,7 @@ RUNTIME_RECORD_FIXTURES = {
     "native-whitespace-effective.json",
     "native-assertion-list.json",
     "native-assertion-primitive.json",
+    "native-capability-inventory.json",
     "record-schema-float.json",
     "unknown-fact.json",
     "unknown-model-known-effort.json",
@@ -717,15 +718,14 @@ SKILL_REFERENCE_FILES = {
 }
 EXPECTED_DESCRIPTION = (
     "Use for non-trivial repository engineering needing mapping, planning, implementation, "
-    "tests, independent review, acceptance, or targeted CUDA/HPC/numerical/security specialists. "
-    "Do not use for simple Q&A or status-only work. Probes and App tasks are not native effective "
-    "evidence; this Skill does not change the parent model or permissions, guarantee model "
-    "availability, or perform automatic CLI model switching or fallback."
+    "tests, independent review, acceptance, targeted CUDA/HPC/numerical/security specialists, "
+    "or native documentation research, vendor research, or API research (Luna-first / Terra-second). "
+    "Do not use for simple Q&A or status-only work, including diagnostic status questions."
 )
 EXPECTED_UI = {
     "display_name": "Versatile Development",
-    "short_description": "Classify, route, verify, and review engineering work",
-    "default_prompt": "Use $versatile-dev for non-trivial repository engineering: classify the task, plan, implement, verify, independently review, and accept the change.",
+    "short_description": "Use for non-trivial repository engineering and native documentation research; do not use for simple Q&A or status-only work",
+    "default_prompt": "Use $versatile-dev for non-trivial repository engineering and native documentation research, including vendor and API research (Luna-first / Terra-second): classify the task, plan, implement, verify, independently review, and accept the change. Do not use for simple Q&A or status-only work.",
 }
 DIRECT_LINK_LINES = {
     "references/model-routing.md": "[model routing](references/model-routing.md)",

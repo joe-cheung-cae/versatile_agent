@@ -163,6 +163,92 @@ class RuntimeRecordTests(unittest.TestCase):
         self.assertEqual(profile.returncode, 0, profile.stderr)
         self.assertEqual(profile.stdout.strip(), "terra-fallback")
 
+    def test_native_capability_inventory_rejects_effective_fields_and_wrong_provenance(self) -> None:
+        document = read_fixture("native-capability-inventory.json")
+        MODULE.validate_document(document)
+        record = document["records"][0]
+        self.assertEqual(record["interface_kind"], "native_capability_inventory")
+        self.assertEqual(record["evidence_source"]["kind"], "fixture_native_capability_inventory")
+        self.assertNotIn("observed", record)
+        self.assertEqual(run_tool("validate", str(FIXTURE_ROOT / "native-capability-inventory.json")).returncode, 0)
+
+        live = copy.deepcopy(document)
+        live["records"][0]["evidence_source"]["kind"] = "native_interface_inventory"
+        MODULE.validate_document(live)
+
+        with self.assertRaises(MODULE.RuntimeRecordError) as context:
+            MODULE.query_record(
+                document,
+                runtime_id=record["runtime_id"],
+                require_effective_agent_type="docs_researcher_luna",
+                require_effective_model="gpt-5.6-luna",
+                require_effective_effort="max",
+            )
+        self.assertIn("STOP_UNVERIFIED", str(context.exception))
+        self.assertNotIn("does not match", str(context.exception))
+
+        query = run_tool(
+            "query",
+            str(FIXTURE_ROOT / "native-capability-inventory.json"),
+            "--runtime-id",
+            record["runtime_id"],
+            "--require-effective-agent-type",
+            "docs_researcher_luna",
+            "--require-effective-model",
+            "gpt-5.6-luna",
+            "--require-effective-effort",
+            "max",
+        )
+        self.assertEqual(query.returncode, 2)
+        self.assertIn("STOP_UNVERIFIED", query.stderr)
+        self.assertNotIn("does not match", query.stderr)
+
+        mutations = (
+            (
+                "observed-effective",
+                lambda item: item.update(
+                    {
+                        "observed": {
+                            "effective_agent_type": "docs_researcher_luna",
+                            "effective_model": "gpt-5.6-luna",
+                            "effective_effort": "max",
+                        }
+                    }
+                ),
+            ),
+            (
+                "observed-requested",
+                lambda item: item.update(
+                    {
+                        "observed": {
+                            "agent_type": "docs_researcher_luna",
+                            "model": "gpt-5.6-luna",
+                            "effort": "max",
+                        }
+                    }
+                ),
+            ),
+            (
+                "spawn-fixture-provenance",
+                lambda item: item["evidence_source"].update({"kind": "fixture_native_spawn_attempt"}),
+            ),
+            (
+                "spawn-details-provenance",
+                lambda item: item["evidence_source"].update({"kind": "native_spawn_details"}),
+            ),
+            (
+                "detector-provenance",
+                lambda item: item["evidence_source"].update({"kind": "detector_probe"}),
+            ),
+            ("binary-path", lambda item: item.update({"binary_path": "/tmp/codex"})),
+        )
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                mutated = copy.deepcopy(document)
+                mutate(mutated["records"][0])
+                with self.assertRaises(MODULE.RuntimeRecordError):
+                    MODULE.validate_document(mutated)
+
     def test_native_spawn_and_app_task_are_valid_only_as_separate_records(self) -> None:
         native = read_fixture("native-spawn.json")
         app_task = read_fixture("app-task.json")
