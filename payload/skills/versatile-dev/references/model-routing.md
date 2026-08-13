@@ -1,30 +1,38 @@
 # 模型与接口路由
 
-## P0 支持边界
+本 reference 描述已验收的 native research orchestration contract。它要求
+显式编排，不把 CLI 的模型选择、probe、TOML、catalog 或 App task 当作
+native effective evidence。
 
-本节冻结目标语义，**不**声明 Codex CLI 会自动切换模型。目标 native
-research route 由 Skill 显式编排两个独立的 named agents：
+## Canonical routing contract
+
+<!-- BEGIN versatile-dev canonical routing contract -->
+Both docs_researcher_luna and docs_researcher_terra are installed and pinned to gpt-5.6-luna/max and gpt-5.6-terra/high.
+Both researchers use the same-interface PRECHECK.
+route_research.py provides deterministic replay and decision semantics.
+Luna is first; only a classified native routing rejection or complete same-attempt native mismatch permits at most one Terra attempt.
+A permitted Terra transition is FALLBACK_PENDING and is limited to one Terra attempt.
+Content, tool, task, timeout, and unknown failures do not authorize Terra fallback.
+Missing, conflicting, or unobservable effective evidence is STOP_UNVERIFIED.
+Every attempt carries the same canonical task_packet_hash.
+runtime_audit.py is separate from the installation manifest.
+Installed, configured, capability, requested, observed, and effective are separate fact layers.
+The installation manifest, probe, and App task cannot fill native effective facts.
+The App user-visible task lane requires explicit authorization in the current user request and cannot authorize native Terra fallback.
+This Skill cannot change the parent model, bypass permissions, guarantee model availability, or perform automatic CLI model switching or fallback.
+Offline validation does not prove live runtime conformance.
+<!-- END versatile-dev canonical routing contract -->
+
+安装 bundle 同时包含两个 read-only named agents：
 
 1. `docs_researcher_luna`，请求 `gpt-5.6-luna` / `max`；
-2. 仅在 Luna 出现可分类的 native-routing failure 后，显式重派
-   `docs_researcher_terra`，最多一次，请求 `gpt-5.6-terra` / `high`。
+2. `docs_researcher_terra`，请求 `gpt-5.6-terra` / `high`，最多一次
+   (at most one) Terra attempt。
 
-两次尝试必须使用同一个 canonical `task_packet_hash`；Terra 的
-`fallback_attempt` 最大为 `1`。这不是 CLI 内部的 automatic fallback。
-
-当前安装器仍安装互斥的 legacy `docs_researcher` profile，尚未安装上述
-双 agent，也尚未提供确定性 route helper 或 live conformance。它们是后续
-阶段的实现；当前不得声称已执行或已验证目标 native route。
-
-在双 agent 安装前，当前可执行行为是一个独立的 legacy single configured
-route：安装器只提供一个 profile-selected `docs_researcher`。只有同一 active
-native interface 暴露该**确切** agent type，且该次 native attempt 的 details
-验证 configured agent type、model 和 effort 时，才可委派一次研究。它不是
-Luna→Terra pair，也不产生 fallback success；exposure/effective evidence 缺失或
-冲突时为 `STOP_UNVERIFIED`，不得启动 alternate role。
-
-这些冻结语义的 regression assertions 属于后续 validator 和 forward-test 修复
-项；P0 不修改测试或把文档契约误报为 live conformance。
+`route_research.py` 是离线、纯函数、确定性的 replay/decision helper；它不
+spawn agent、不访问网络或认证、不执行 probe，也不从配置或 App 数据发明
+事实。Luna 与 Terra attempt 必须使用相同的 canonical `task_packet_hash`，
+且 `fallback_attempt` 最多为 `1`。
 
 ## 证据分层与 runtime record
 
@@ -86,7 +94,8 @@ attempt 若缺少、内部冲突、跨 runtime 混用或不可观测的 effectiv
 | Luna 的 observed agent/model/effort 与请求和配置一致 | `DONE_LUNA` | 否 |
 | Terra attempt 的 observed agent/model/effort 与请求和配置一致 | `DONE_TERRA` | 否 |
 | 内容质量、工具调用、任务执行失败 | `STOP_FAILED` | 否 |
-| timeout 或未知异常 | `STOP_FAILED`；若同时缺 effective metadata，优先 `STOP_UNVERIFIED` | 否 |
+| timeout | `STOP_FAILED`；若同时缺 effective metadata，优先 `STOP_UNVERIFIED` | 否 |
+| unknown exception | `STOP_UNVERIFIED` | 否 |
 | Terra 尝试后任何路由或执行失败 | `STOP_FAILED`；缺/冲突 effective metadata 时为 `STOP_UNVERIFIED` | 否 |
 
 只有表中第二行的、发生在 PRECHECK 成功之后的
