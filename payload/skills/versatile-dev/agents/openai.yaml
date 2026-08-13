@@ -1,4 +1,4 @@
 interface:
   display_name: "Versatile Development"
-  short_description: "Classify, route, verify, and review engineering work"
-  default_prompt: "Use $versatile-dev for non-trivial repository engineering: classify the task, plan, implement, verify, independently review, and accept the change."
+  short_description: "Use for non-trivial repository engineering and native documentation research; do not use for simple Q&A or status-only work"
+  default_prompt: "Use $versatile-dev for non-trivial repository engineering and native documentation research, including vendor and API research (Luna-first / Terra-second): classify the task, plan, implement, verify, independently review, and accept the change. Do not use for simple Q&A or status-only work."

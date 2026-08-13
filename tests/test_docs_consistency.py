@@ -20,6 +20,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 DEVELOPMENT_PLAN = ROOT / "DEVELOPMENT_PLAN.md"
+AGENTS = ROOT / "AGENTS.md"
 AGENT_ROOT = ROOT / "payload/agents/common"
 FORWARD_HELPER = ROOT / "payload/skills/versatile-dev/scripts/forward_router.py"
 ROUTE_HELPER = ROOT / "payload/skills/versatile-dev/scripts/route_research.py"
@@ -93,7 +94,8 @@ class DocumentationConsistencyTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.readme = README.read_text(encoding="utf-8")
         cls.plan = DEVELOPMENT_PLAN.read_text(encoding="utf-8")
-        cls.docs = f"{cls.readme}\n{cls.plan}"
+        cls.agents = AGENTS.read_text(encoding="utf-8")
+        cls.docs = f"{cls.readme}\n{cls.plan}\n{cls.agents}"
 
     def test_manifest_and_agent_facts_are_derived_from_shipped_sources(self) -> None:
         manifest = MANIFEST.build_manifest("luna-v1", "project", "0.1.0")
@@ -380,6 +382,7 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("Permission is hereby granted, free of charge", license_text)
         self.assertIn("MIT License", self.readme)
 
+        self.assertIn(self.agents, self.docs)
         for phrase in (
             "13 unique",
             "same canonical `task_packet_hash`",
@@ -396,6 +399,9 @@ class DocumentationConsistencyTests(unittest.TestCase):
             "future work",
             "selects Terra/High fallback",
             "Luna unavailable",
+            "payload/agents/profiles/",
+            "no existing commit history",
+            "exercises runtime detection",
         ):
             with self.subTest(stale=stale):
                 self.assertNotIn(stale.casefold(), self.docs.casefold())

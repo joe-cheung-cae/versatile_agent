@@ -36,7 +36,7 @@ def managed_lines(missing: set[str] | None = None) -> list[str]:
     return [f"{key} = {value}\n" for key, value in selected.items()]
 
 
-def merge_text(text: str) -> str:
+def merge_text(text: str, *, force: bool = False) -> str:
     if text:
         validate_toml(text, "existing config")
 
@@ -72,7 +72,10 @@ def merge_text(text: str) -> str:
                 if re.match(rf"^\s*{re.escape(key)}\s*=", line):
                     if key in seen:
                         raise ValueError(f"existing [agents] section contains duplicate key: {key}")
-                    output.append(f"{key} = {value}\n")
+                    if force:
+                        output.append(f"{key} = {value}\n")
+                    else:
+                        output.append(line)
                     seen.add(key)
                     replaced = True
                     break
@@ -117,11 +120,12 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("path", type=Path)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--force-config", action="store_true")
     args = parser.parse_args()
 
     current = args.path.read_text(encoding="utf-8") if args.path.exists() else ""
     try:
-        merged = merge_text(current)
+        merged = merge_text(current, force=args.force_config)
     except ValueError as exc:
         print(f"config merge failed: {exc}", file=sys.stderr)
         return 2

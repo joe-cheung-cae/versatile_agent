@@ -163,6 +163,51 @@ class RoutingStateTests(unittest.TestCase):
         self.assertEqual(result["next_action"], "precheck")
         self.assertFalse(result["terminal"])
 
+    def test_precheck_accepts_native_spawn_attempt_and_capability_inventory(self) -> None:
+        spawn = MODULE.decide(route_document("native-spawn.json", [precheck()]))
+        self.assertEqual(spawn["state"], MODULE.STATE_LUNA_PENDING)
+        self.assertEqual(spawn["next_action"], "spawn_luna")
+        self.assertEqual(spawn["reason"], "precheck_verified_same_record_dual_agent_exposure")
+        self.assertFalse(spawn["terminal"])
+
+        inventory = MODULE.decide(
+            route_document(
+                "native-capability-inventory.json",
+                [precheck("fixture-native-capability-inventory")],
+            )
+        )
+        self.assertEqual(inventory["state"], MODULE.STATE_LUNA_PENDING)
+        self.assertEqual(inventory["next_action"], "spawn_luna")
+        self.assertEqual(inventory["reason"], "precheck_verified_same_record_dual_agent_exposure")
+        self.assertEqual(inventory["precheck_runtime_id"], "fixture-native-capability-inventory")
+        self.assertFalse(inventory["terminal"])
+
+    def test_precheck_rejects_incomplete_diagnostic_inventory_and_probe_records(self) -> None:
+        missing = route_document(
+            "native-capability-inventory.json",
+            [precheck("fixture-native-capability-inventory")],
+        )
+        missing["runtime_records"]["records"][0]["exposed_agent_types"] = ["docs_researcher_luna"]
+        missing_result = MODULE.decide(missing)
+        self.assertEqual(missing_result["state"], MODULE.STATE_STOP_UNVERIFIED)
+        self.assertEqual(missing_result["next_action"], "none")
+        self.assertEqual(missing_result["reason"], "precheck_same_record_dual_agent_exposure_required")
+
+        diagnostic = route_document(
+            "native-capability-inventory.json",
+            [precheck("fixture-native-capability-inventory")],
+        )
+        diagnostic["runtime_records"]["records"][0]["diagnostic_only"] = True
+        diagnostic_result = MODULE.decide(diagnostic)
+        self.assertEqual(diagnostic_result["state"], MODULE.STATE_STOP_UNVERIFIED)
+        self.assertEqual(diagnostic_result["next_action"], "none")
+        self.assertEqual(diagnostic_result["reason"], "precheck_diagnostic_evidence_is_not_effective")
+
+        probe = MODULE.decide(route_document("cli-and-app-records.json", [precheck("fixture-cli-v2")]))
+        self.assertEqual(probe["state"], MODULE.STATE_STOP_UNVERIFIED)
+        self.assertEqual(probe["next_action"], "none")
+        self.assertEqual(probe["reason"], "precheck_requires_native_spawn_interface")
+
     def test_precheck_requires_one_same_record_dual_native_exposure(self) -> None:
         base = read_fixture("native-spawn.json")
         cases = {
