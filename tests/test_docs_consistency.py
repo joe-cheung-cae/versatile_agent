@@ -374,6 +374,12 @@ class DocumentationConsistencyTests(unittest.TestCase):
         self.assertIn("SHA256SUMS", self.docs)
 
     def test_presentation_checks_remain_supplemental(self) -> None:
+        license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("MIT License", license_text)
+        self.assertIn("Copyright (c) 2026 Joe Cheung", license_text)
+        self.assertIn("Permission is hereby granted, free of charge", license_text)
+        self.assertIn("MIT License", self.readme)
+
         for phrase in (
             "13 unique",
             "same canonical `task_packet_hash`",

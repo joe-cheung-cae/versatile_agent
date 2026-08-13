@@ -69,6 +69,7 @@ cp -p \
   "$bundle_root/package.sh" \
   "$bundle_root/README.md" \
   "$bundle_root/DEVELOPMENT_PLAN.md" \
+  "$bundle_root/LICENSE" \
   "$bundle_root/VERSION" \
   "$staging_bundle/"
 

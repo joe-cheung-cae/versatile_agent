@@ -197,3 +197,7 @@ Official references used for the design:
 - [Codex subagents](https://learn.chatgpt.com/docs/agent-configuration/subagents.md)
 - [Codex skills](https://learn.chatgpt.com/docs/skills)
 - [Codex configuration](https://learn.chatgpt.com/docs/config-file/config-reference)
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).

@@ -2325,6 +2325,7 @@ def validate_root(root: Path, check: Validation) -> None:
         "VERSION",
         "README.md",
         "DEVELOPMENT_PLAN.md",
+        "LICENSE",
         "install.sh",
         "validate.sh",
         "package.sh",

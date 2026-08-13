@@ -187,7 +187,7 @@ schema-valid sample is therefore still `UNVERIFIED`.
 `package.sh` accepts `--output DIR` and `--skip-tests`, runs `validate.sh` and
 the offline test gate by default, stages `payload/`, `scripts/`, `tests/`,
 `install.sh`, `validate.sh`, `package.sh`, `README.md`,
-`DEVELOPMENT_PLAN.md`, and `VERSION`, then produces:
+`DEVELOPMENT_PLAN.md`, `LICENSE`, and `VERSION`, then produces:
 
 ```text
 codex-versatile-agent-workflow-<version>.tar.gz
