@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SKILL_PATH = ROOT / "payload/skills/versatile-dev/SKILL.md"
 UI_PATH = ROOT / "payload/skills/versatile-dev/agents/openai.yaml"
 REFERENCE_DIR = ROOT / "payload/skills/versatile-dev/references"
+AGENT_DIR = ROOT / "payload/agents/common"
 VALIDATOR_PATH = ROOT / "scripts/validate_bundle.py"
 SPEC = importlib.util.spec_from_file_location("validate_bundle_skill_contract", VALIDATOR_PATH)
 if SPEC is None or SPEC.loader is None:
@@ -49,6 +51,21 @@ class SkillContractTests(unittest.TestCase):
         errors = VALIDATOR.reference_topology_violations(skill, references or self.references, SKILL_PATH)
         self.assertTrue(errors, "the topology mutation was accepted")
 
+    def assert_semantic_diagnostic(
+        self,
+        candidate: str,
+        diagnostic: str,
+        references: dict[str, str] | None = None,
+    ) -> None:
+        self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+        errors = VALIDATOR.semantic_contract_violations(
+            candidate, references or self.references, self.ui
+        )
+        self.assertTrue(
+            any(diagnostic in error for error in errors),
+            f"missing diagnostic {diagnostic!r}: {errors}",
+        )
+
     def validate_materialized(self, mutations: dict[str, bytes] | None = None) -> list[str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -61,6 +78,15 @@ class SkillContractTests(unittest.TestCase):
             check = VALIDATOR.Validation()
             VALIDATOR.validate_skill(root, check)
             return check.errors
+
+    def agent_errors(self, filename: str, sentence: str, section: str = "ALLOWED ACTIONS AND TOOLS") -> list[str]:
+        path = AGENT_DIR / filename
+        source = path.read_text(encoding="utf-8")
+        marker = f"# {section}\n"
+        candidate = source.replace(marker, marker + sentence + "\n", 1)
+        self.assertNotEqual(candidate, source, "agent mutation was a no-op")
+        data = tomllib.loads(candidate)
+        return VALIDATOR.agent_contract_violations(data, str(path))
 
     def test_real_tree_is_valid(self) -> None:
         self.assertEqual(VALIDATOR.semantic_contract_violations(self.skill, self.references, self.ui), [])
@@ -329,6 +355,590 @@ class SkillContractTests(unittest.TestCase):
             removed = removed.replace(source, "")
         definitions = "\n".join(f"[unused-{i}]: {target}" for i, target in enumerate(VALIDATOR.DIRECT_LINK_LINES))
         self.assert_topology_rejects(removed + "\n" + definitions)
+
+    def test_direct_reference_topology_requires_active_inline_usages(self) -> None:
+        definitions = "\n".join(
+            f"[definition-{i}]: {target}"
+            for i, target in enumerate(VALIDATOR.DIRECT_LINK_LINES)
+        )
+        removed = self.skill
+        for source in VALIDATOR.DIRECT_LINK_LINES.values():
+            removed = removed.replace(source, "", 1)
+        cases = (
+            ("definition-only", removed + "\n" + definitions),
+            (
+                "unused-definition-with-all-inline-links",
+                self.skill + "\n[unused]: references/model-routing.md\n",
+            ),
+            (
+                "masked-definition-only",
+                removed + "\n```text\n[masked]: references/model-routing.md\n```\n",
+            ),
+            (
+                "masked-inline-only",
+                removed
+                + "\n```text\n[model routing](references/model-routing.md)\n```\n",
+            ),
+        )
+        for name, candidate in cases:
+            with self.subTest(mutation=name):
+                self.assertNotEqual(candidate, self.skill)
+                errors = VALIDATOR.reference_topology_violations(
+                    candidate, self.references, SKILL_PATH
+                )
+                if "definition" in name:
+                    self.assertTrue(
+                        any("definition cannot satisfy" in error for error in errors),
+                        errors,
+                    )
+                else:
+                    self.assertTrue(
+                        any("exactly one active direct link" in error for error in errors),
+                        errors,
+                    )
+        self.assertEqual(
+            VALIDATOR.reference_topology_violations(
+                self.skill, self.references, SKILL_PATH
+            ),
+            [],
+        )
+
+    def test_registered_app_and_failure_polarity_is_closed_and_line_local(self) -> None:
+        rejecting = (
+            (
+                "app could",
+                "App tasks could be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app can",
+                "App tasks can be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app may with whitespace",
+                "APP   TASKS   MAY   BE   CREATED, WITHOUT EXPLICIT AUTHORIZATION!",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app allowed",
+                "App tasks are allowed to be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app creation allowed",
+                "App task creation is allowed without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "app authorizes",
+                "App task creation authorizes without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "failure could",
+                "Content failures could authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "failure allowed",
+                "Content failures are allowed to authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "failure may route switch",
+                "Content, task, or tool failure may authorize route switching.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "failure authorizes",
+                "Content failures authorizes Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+            (
+                "legal-then-app",
+                "Do not create an App task without explicit authorization, and App tasks could be created without explicit authorization.",
+                "App task creation without explicit authorization",
+            ),
+            (
+                "legal-then-failure",
+                "Content failures do not authorize Terra fallback, and Content failures could authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+            ),
+        )
+        for name, sentence, diagnostic in rejecting:
+            with self.subTest(mutation=name):
+                self.assert_semantic_diagnostic(
+                    self.skill + "\n" + sentence + "\n", diagnostic
+                )
+
+        accepted = (
+            "Do not create an App task without explicit authorization.",
+            "App tasks cannot be created without explicit authorization.",
+            "App tasks are not allowed to be created without explicit authorization.",
+            "Content failures do not authorize Terra fallback.",
+            "Content failures could not authorize Terra fallback.",
+            "Do not say: App tasks could be created without explicit authorization.",
+            "App tasks could be\ncreated without explicit authorization.",
+            "App tasks could be\n\ncreated without explicit authorization.",
+            "```text\nApp tasks could be created without explicit authorization.\n```",
+        )
+        for sentence in accepted:
+            with self.subTest(control=sentence):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill)
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(
+                        candidate, self.references, self.ui
+                    ),
+                    [],
+                )
+
+    def test_polarity_punctuation_and_modal_families_cover_skill_and_agent_paths(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        cases = (
+            ("app-may", "App tasks may be created without explicit authorization.", app_diagnostic),
+            ("app-can", "App tasks can be created without explicit authorization.", app_diagnostic),
+            ("app-could-semicolon", "App tasks could; be created without explicit authorization.", app_diagnostic),
+            ("app-are-allowed", "App tasks are allowed to be created without explicit authorization.", app_diagnostic),
+            ("app-is-allowed-colon", "App task creation is allowed: without explicit authorization.", app_diagnostic),
+            ("app-be-allowed-dash", "App tasks be allowed to be created — without explicit authorization.", app_diagnostic),
+            ("app-direct-action", "App task creation authorizes, without explicit authorization.", app_diagnostic),
+            ("failure-may", "Content failures may authorize Terra fallback.", failure_diagnostic),
+            ("failure-can-colon", "Content failures can authorize: Terra fallback.", failure_diagnostic),
+            ("failure-could-semicolon", "Content failures could authorize; Terra fallback.", failure_diagnostic),
+            ("failure-are-allowed", "Content failures are allowed to authorize Terra fallback.", failure_diagnostic),
+            ("failure-direct-action-dash", "Content failures authorizes — Terra fallback.", failure_diagnostic),
+            ("case-and-space", "APP   TASKS   MAY   BE   CREATED, WITHOUT EXPLICIT AUTHORIZATION!", app_diagnostic),
+        )
+        for name, sentence, diagnostic in cases:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+
+            filename = "architect.toml" if diagnostic == app_diagnostic else "docs_researcher_luna.toml"
+            with self.subTest(path="agent", mutation=name):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(
+                    any(diagnostic in error for error in errors),
+                    f"missing diagnostic {diagnostic!r}: {errors}",
+                )
+
+    def test_ascii_hyphen_suffixes_are_checked_on_skill_and_agent_paths(self) -> None:
+        cases = (
+            (
+                "app-legal-then-contradiction",
+                "App tasks cannot be created without authorization - App tasks could be created without authorization.",
+                "App task creation without explicit authorization",
+                "architect.toml",
+            ),
+            (
+                "failure-legal-then-contradiction",
+                "Content failures do not authorize Terra fallback - Content failures could authorize Terra fallback.",
+                "failure authorization of Terra fallback",
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in cases:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+    def test_ascii_hyphen_boundary_stays_out_of_tokens_and_hard_boundaries(self) -> None:
+        skill_controls = (
+            "Quoted-App tasks could be created without authorization.",
+            "well-known prose about App tasks could be created without authorization.",
+            "-",
+            "- ordinary list marker",
+            "App tasks could\nbe created without authorization.",
+            "- App tasks could\n- be created without authorization.",
+            "App tasks could\n\nbe created without authorization.",
+            "```text\nApp tasks could - be created without authorization.\n```",
+        )
+        for sentence in skill_controls:
+            with self.subTest(path="Skill", control=sentence):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+
+        agent_controls = (
+            "Quoted-App tasks could be created without authorization.",
+            "well-known prose about App tasks could be created without authorization.",
+            "-",
+            "- ordinary list marker",
+            "App tasks could\nbe created without authorization.",
+            "- App tasks could\n- be created without authorization.",
+            "App tasks could\n\nbe created without authorization.",
+        )
+        for sentence in agent_controls:
+            with self.subTest(path="agent", control=sentence):
+                self.assertEqual(self.agent_errors("architect.toml", sentence), [])
+
+        references = dict(self.references)
+        references["workflow.md"] += "\n```text\nContent failures could authorize - Terra fallback.\n```\n"
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(self.skill, references, self.ui),
+            [],
+        )
+
+    def test_polarity_inline_code_projection_is_bounded_and_shared(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        rejecting = (
+            (
+                "app-after-inline-code",
+                "App tasks could be created without authorization. `benign`",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "app-before-inline-code",
+                "`benign` App tasks could be created without authorization.",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "app-between-inline-code",
+                "App tasks could be `benign` created without authorization.",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "failure-after-inline-code",
+                "Content failures could authorize Terra fallback. `benign`",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "failure-before-inline-code",
+                "`benign` Content failures could authorize Terra fallback.",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "failure-between-inline-code",
+                "Content failures could `benign` authorize Terra fallback.",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-multiple-inline-spans",
+                "App tasks could be created without authorization. `one` and `two`",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "app-escaped-backticks-are-active",
+                r"App tasks could be created without authorization. \`benign\`",
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "failure-escaped-backticks-are-active",
+                r"Content failures could authorize Terra fallback. \`benign\`",
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in rejecting:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                agent_sentence = sentence.replace("\\", "\\\\")
+                errors = self.agent_errors(filename, agent_sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+        accepted = (
+            (
+                "app-inline-code-only",
+                "`App tasks could be created without authorization.`",
+                "architect.toml",
+            ),
+            (
+                "failure-inline-code-only",
+                "`Content failures could authorize Terra fallback.`",
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-unsafe-inside-code-with-benign-prose",
+                "`App tasks could be created without authorization.` note",
+                "architect.toml",
+            ),
+            (
+                "failure-unsafe-inside-code-with-benign-prose",
+                "`Content failures could authorize Terra fallback.` note",
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-fully-fenced",
+                "```text\nApp tasks could be created without authorization.\n```",
+                "architect.toml",
+            ),
+            (
+                "failure-fully-fenced",
+                "~~~text\nContent failures could authorize Terra fallback.\n~~~",
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "app-unmatched-run-is-inactive",
+                "App tasks could be created without authorization. `unmatched",
+                "architect.toml",
+            ),
+            (
+                "failure-mismatched-runs-are-inactive",
+                "Content failures could authorize Terra fallback. `one ``two",
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, filename in accepted:
+            with self.subTest(path="Skill", control=name):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+            with self.subTest(path="agent", control=name):
+                self.assertEqual(self.agent_errors(filename, sentence), [])
+
+    def test_polarity_keeps_hard_boundaries_and_negation_local(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        controls = (
+            "App tasks could,\nbe created without explicit authorization.",
+            "App tasks could\nbe created without explicit authorization.",
+            "App tasks could\n\nbe created without explicit authorization.",
+            "- App tasks could\n- be created without explicit authorization.",
+            "Content failures could authorize,\nTerra fallback.",
+        )
+        for sentence in controls:
+            with self.subTest(path="Skill", control=sentence):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill)
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+            with self.subTest(path="agent", control=sentence):
+                self.assertEqual(self.agent_errors("architect.toml", sentence), [])
+
+        section_split = self.skill + "\nApp tasks could\n"
+        split_references = dict(self.references)
+        split_references["workflow.md"] += "\nbe created without explicit authorization.\n"
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(section_split, split_references, self.ui),
+            [],
+        )
+
+        agent_path = AGENT_DIR / "architect.toml"
+        source = agent_path.read_text(encoding="utf-8")
+        split_candidate = source.replace(
+            "# OWNERSHIP\n", "# OWNERSHIP\nApp tasks could\n", 1
+        ).replace(
+            "# ALLOWED ACTIONS AND TOOLS\n",
+            "# ALLOWED ACTIONS AND TOOLS\nbe created without explicit authorization.\n",
+            1,
+        )
+        self.assertNotEqual(split_candidate, source)
+        self.assertEqual(
+            VALIDATOR.agent_contract_violations(tomllib.loads(split_candidate), str(agent_path)),
+            [],
+        )
+
+        rejecting = (
+            "Do not create an App task without explicit authorization, and App tasks could; be created without explicit authorization.",
+            "Content failures do not authorize Terra fallback; Content failures could authorize; Terra fallback.",
+        )
+        for sentence in rejecting:
+            diagnostic = app_diagnostic if sentence.startswith("Do not create") else failure_diagnostic
+            with self.subTest(path="Skill", mutation=sentence):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            filename = "architect.toml" if diagnostic == app_diagnostic else "docs_researcher_luna.toml"
+            with self.subTest(path="agent", mutation=sentence):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+    def test_quoted_quote_and_example_protect_only_the_immediate_clause(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        app_sentence = "App tasks could be created without explicit authorization."
+        failure_sentence = "Content failures could authorize Terra fallback."
+        benign = (
+            ("quoted-colon-app", "Quoted: " + app_sentence, "architect.toml"),
+            ("quote-fullwidth-failure", "Quote： " + failure_sentence, "docs_researcher_luna.toml"),
+            ("example-colon-app", "Example: " + app_sentence, "architect.toml"),
+            ("example-fullwidth-failure", "Example： " + failure_sentence, "docs_researcher_luna.toml"),
+        )
+        for name, sentence, filename in benign:
+            with self.subTest(path="Skill", mutation=name):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill)
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+            with self.subTest(path="agent", mutation=name):
+                self.assertEqual(self.agent_errors(filename, sentence), [])
+
+        rejecting = (
+            (
+                "quoted-later-app",
+                "Quoted: " + app_sentence[:-1] + ", and " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "example-later-failure",
+                "Example: " + failure_sentence[:-1] + "; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in rejecting:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+    def test_registered_quoting_introducers_protect_semicolon_immediate_clause(self) -> None:
+        app_diagnostic = "App task creation without explicit authorization"
+        failure_diagnostic = "failure authorization of Terra fallback"
+        app_sentence = "App tasks could be created without explicit authorization."
+        failure_sentence = "Content failures could authorize Terra fallback."
+        benign = (
+            ("quoted-semicolon-app", "Quoted; " + app_sentence, app_diagnostic, "architect.toml"),
+            ("quote-semicolon-app", "Quote; " + app_sentence, app_diagnostic, "architect.toml"),
+            ("example-semicolon-app", "Example; " + app_sentence, app_diagnostic, "architect.toml"),
+            (
+                "quoted-semicolon-failure",
+                "Quoted; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "quote-semicolon-failure",
+                "Quote; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "example-semicolon-failure",
+                "Example; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in benign:
+            with self.subTest(path="Skill", control=name):
+                candidate = self.skill + "\n" + sentence + "\n"
+                self.assertNotEqual(candidate, self.skill, "mutation was a no-op")
+                self.assertEqual(
+                    VALIDATOR.semantic_contract_violations(candidate, self.references, self.ui),
+                    [],
+                )
+            with self.subTest(path="agent", control=name):
+                self.assertEqual(self.agent_errors(filename, sentence), [])
+
+        rejecting = (
+            (
+                "quoted-later-semicolon-app",
+                "Quoted; " + app_sentence[:-1] + "; " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "quote-later-conjunction-app",
+                "Quote; " + app_sentence[:-1] + ", and " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "example-later-semicolon-app",
+                "Example; " + app_sentence[:-1] + "; " + app_sentence,
+                app_diagnostic,
+                "architect.toml",
+            ),
+            (
+                "quoted-later-conjunction-failure",
+                "Quoted; " + failure_sentence[:-1] + ", and " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "quote-later-semicolon-failure",
+                "Quote; " + failure_sentence[:-1] + "; " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+            (
+                "example-later-conjunction-failure",
+                "Example; " + failure_sentence[:-1] + ", and " + failure_sentence,
+                failure_diagnostic,
+                "docs_researcher_luna.toml",
+            ),
+        )
+        for name, sentence, diagnostic, filename in rejecting:
+            with self.subTest(path="Skill", mutation=name):
+                self.assert_semantic_diagnostic(self.skill + "\n" + sentence + "\n", diagnostic)
+            with self.subTest(path="agent", mutation=name):
+                errors = self.agent_errors(filename, sentence)
+                self.assertTrue(any(diagnostic in error for error in errors), errors)
+
+    def test_fenced_h2_h3_lines_fail_closed_without_breaking_code_fences(self) -> None:
+        mutations = (
+            ("skill-canonical-backtick", "SKILL.md", "```text\n## Contract\n```"),
+            ("skill-peer-tilde", "SKILL.md", "  ~~~~\n   ### Peer\n  ~~~~"),
+            (
+                "routing-canonical-long-backtick",
+                "model-routing.md",
+                "````text\n  ## Canonical routing contract\n````",
+            ),
+            (
+                "workflow-peer-invalid-close",
+                "workflow.md",
+                "~~~\n### Peer\n~~~suffix\n",
+            ),
+            (
+                "reference-peer",
+                "review-policy.md",
+                "```\n## Unrelated peer\n```",
+            ),
+        )
+        for name, filename, fence in mutations:
+            with self.subTest(mutation=name):
+                if filename == "SKILL.md":
+                    candidate = self.skill + "\n" + fence + "\n"
+                    errors = VALIDATOR.semantic_contract_violations(
+                        candidate, self.references, self.ui
+                    )
+                else:
+                    references = dict(self.references)
+                    references[filename] += "\n" + fence + "\n"
+                    candidate = self.skill
+                    errors = VALIDATOR.semantic_contract_violations(
+                        candidate, references, self.ui
+                    )
+                if filename == "SKILL.md":
+                    self.assertNotEqual(candidate, self.skill)
+                else:
+                    self.assertNotEqual(references[filename], self.references[filename])
+                self.assertTrue(
+                    any("unsupported H2/H3 heading inside a fenced source block" in error for error in errors),
+                    errors,
+                )
+
+        ordinary = dict(self.references)
+        ordinary["workflow.md"] += "\n```text\nordinary code\n```\n"
+        self.assertEqual(
+            VALIDATOR.semantic_contract_violations(self.skill, ordinary, self.ui),
+            [],
+        )
 
     def test_unsupported_skill_link_forms_fail_closed(self) -> None:
         cases = (
