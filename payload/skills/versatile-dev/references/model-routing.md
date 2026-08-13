@@ -110,7 +110,17 @@ native `effective_*` 字段。
 
 ## Per-attempt audit
 
-每次 native 尝试都记录下列字段；字段未知时保留 `unknown`，不要回填猜测值：
+安装清单与 per-attempt audit 是两个不同的封闭 artifact。`install-manifest.json`
+只能是 `artifact_kind=installation_manifest`、`schema_version=2`，并只记录
+`bundle_version`、`installed_at`、`scope`、`selected_profile`、13 个
+`installed_agents`，以及 keyed `configured_researchers`（Luna 与 Terra 的
+`agent_type`/`model`/`effort`）。它不能记录 probe、observed/effective、fallback
+success 或 capability claim；`selected_profile` 只是 legacy install selector。
+
+每次 native 或独立 App-task 尝试都通过
+`scripts/runtime_audit.py` 写一个独立的 `artifact_kind=runtime_route_audit`、
+`schema_version=1` 文档。文档只有 `schema_version`、`artifact_kind`、`attempt`；
+`attempt` 恰好包含下列字段，未知事实必须保留字面值 `unknown`：
 
 ```text
 attempt_id
@@ -137,8 +147,22 @@ evidence_source
 
 `configured_*` 只能来自 TOML；`observed_effective_*` 只能来自本次 native
 runtime details。不得用 installed/configured/capability data 填 effective
-字段。Luna 与 Terra 使用相同 task packet，除 agent/model/effort 和路由审计
-元数据外不改变任务内容。
+字段。`evidence_source` 恰好包含 `kind`、`interface`、`runtime_id`、
+`attempt_id`、`scope`、`diagnostic_only`；允许的 kind 只有
+`native_runtime_details`、`app_task_details`、`configured_agent_toml`、
+`install_manifest`、`diagnostic_probe`。已知 observed effective agent/model/effort
+必须是完整 tuple，并要求 `native_runtime_details`、`scope=single-attempt`、
+`diagnostic_only=false`、native interface 及相同 `attempt_id`；其余 source 不能
+填充该 tuple。requested/configured tuple 也必须全 known 或全 `unknown`。
+
+Helper 只做离线、确定性、closed/type-strict validation 与 canonical JSON；它不
+spawn、probe、读取 TOML/catalog、合并 runtime records 或发明事实。JSON 输入严格
+UTF-8，重复成员和 padded/mixed 值 fail closed；canonicalize 的文件输出采用
+atomic replacement。Luna/Terra 的 `task_packet_hash` 变化必须由消费者视为不同
+attempt chain；helper 只验证 canonical hash 及 attempt/fallback 字段，不跨文件
+推断连续性。
+
+Luna 与 Terra 使用相同 task packet，除 agent/model/effort 和路由审计元数据外不改变任务内容。
 
 ## Context transfer
 
