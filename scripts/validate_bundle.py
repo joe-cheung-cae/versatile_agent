@@ -15,19 +15,17 @@ import re
 import sys
 import tomllib
 from pathlib import Path
+from typing import Mapping
 
 
-REQUIRED_AGENT_KEYS = {
+REQUIRED_AGENT_KEYS = frozenset({
     "name",
     "description",
     "developer_instructions",
     "model",
     "model_reasoning_effort",
     "sandbox_mode",
-}
-ALLOWED_MODELS = {"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"}
-ALLOWED_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
-ALLOWED_SANDBOX = {"read-only", "workspace-write", "danger-full-access"}
+})
 EXPECTED_COMMON = {
     "code_mapper",
     "architect",
@@ -44,6 +42,634 @@ EXPECTED_COMMON = {
     "docs_researcher_terra",
 }
 EXPECTED_COMMON_FILES = {f"{name}.toml" for name in EXPECTED_COMMON}
+AGENT_CONTRACT_HEADINGS = (
+    "# ROLE AND SUCCESS",
+    "# USE WHEN / DO NOT USE WHEN",
+    "# REQUIRED INPUTS",
+    "# OWNERSHIP",
+    "# ALLOWED ACTIONS AND TOOLS",
+    "# FORBIDDEN ACTIONS",
+    "# WORKFLOW",
+    "# STOP / ESCALATE",
+    "# EVIDENCE",
+    "# RETURN SCHEMA",
+)
+AGENT_CONTRACT_HEADING_NAMES = tuple(heading.removeprefix("# ") for heading in AGENT_CONTRACT_HEADINGS)
+READ_ONLY_AGENTS = frozenset(
+    {
+        "architect",
+        "code_mapper",
+        "docs_researcher_luna",
+        "docs_researcher_terra",
+        "gpu_reviewer",
+        "numerics_reviewer",
+        "parallelism_reviewer",
+        "reviewer",
+        "security_reviewer",
+        "test_validator",
+    }
+)
+WRITER_AGENTS = frozenset({"implementer", "performance_profiler", "tester"})
+
+# These are the complete physical lines whose values close a safety-relevant
+# handoff contract.  They are source registrations, not hashes: surrounding
+# explanatory prose remains flexible, while enum/status/verdict and researcher
+# route/audit values cannot be widened by suffixes or weakened replacements.
+RESEARCH_STATUS_FAILURE_MATRIX_LINES = (
+    "COMPLETE + NONE: valid; COMPLETE iff FAILURE_CLASS=NONE.",
+    "STOP_UNVERIFIED + ROUTE_METADATA_MISSING, ROUTE_METADATA_CONFLICT, or UNKNOWN_EXCEPTION: valid.",
+    "STOP_FAILED + TASK_FAILURE: valid.",
+    "STOP_FAILED + TIMEOUT: valid only when effective route metadata is complete and non-conflicting.",
+    "STOP_UNVERIFIED + TIMEOUT: valid when effective route metadata is missing, conflicting, or unobservable; metadata uncertainty has priority.",
+    "All other STATUS/FAILURE_CLASS combinations are invalid.",
+)
+RESEARCH_STATUS_FAILURE_SCHEMA_LINES = (
+    "STATUS_FAILURE_MATRIX:",
+    *RESEARCH_STATUS_FAILURE_MATRIX_LINES,
+    "STATUS: COMPLETE | STOP_FAILED | STOP_UNVERIFIED; COMPLETE only when evidence supports the claims.",
+    "FAILURE_CLASS: NONE | NATIVE_ROUTING_FAILURE | ROUTE_METADATA_MISSING | ROUTE_METADATA_CONFLICT | TASK_FAILURE | TIMEOUT | UNKNOWN_EXCEPTION.",
+)
+RESEARCH_REPORT_SCOPE_LINE = (
+    "REPORT_SCOPE: Observed or returnable child report after a child attempt exists; "
+    "a pre-spawn native rejection is parent-owned raw evidence and has no child handoff."
+)
+
+
+def _researcher_exact_schema_lines(
+    requested_route: str, native_failure_line: str, route_authority: str
+) -> tuple[str, ...]:
+    return (
+        f"REQUESTED_ROUTE: {requested_route}",
+        "OBSERVED_ROUTE: Observed native route, or unknown when unobserved.",
+        RESEARCH_REPORT_SCOPE_LINE,
+        *RESEARCH_STATUS_FAILURE_SCHEMA_LINES,
+        native_failure_line,
+        f"ROUTE_AUTHORITY: {route_authority}",
+    )
+
+# These are deliberately closed contradictory literals. They catch explicit
+# permissions or claims that would override a registered prohibition without
+# attempting a general natural-language polarity or intent classifier. Punctuation
+# variants are handled by _normalize_registered_text; the wording itself remains
+# closed and registered.
+GLOBAL_CONTRADICTORY_PERMISSION_RULES = (
+    (
+        (
+            "may run destructive commands",
+            "may execute destructive commands",
+            "may issue destructive commands",
+            "may perform destructive commands",
+            "may run destructive operations",
+            "may execute destructive operations",
+            "may perform destructive operations",
+            "may launch destructive operations",
+        ),
+        "contradictory destructive-command/operation permission is forbidden",
+    ),
+    (
+        (
+            "may perform harmful external exploitation",
+            "may conduct harmful external exploitation",
+            "may carry out harmful external exploitation",
+            "may run harmful external exploitation",
+            "may perform destructive external exploitation",
+            "may conduct destructive external exploitation",
+        ),
+        "contradictory harmful-exploitation permission is forbidden",
+    ),
+    (
+        (
+            "may expose secrets",
+            "may disclose secrets",
+            "may reveal secrets",
+            "may publish secrets",
+            "may transmit secrets",
+            "may output secrets",
+            "may expose or disclose secrets",
+        ),
+        "contradictory secret-disclosure permission is forbidden",
+    ),
+    (
+        (
+            "may make an implicit commit, push, or PR",
+            "may make an implicit commit, push, or pull request",
+            "may perform an implicit commit, push, or PR",
+            "may make an implicit commit/push/PR",
+            "may create an implicit pull request",
+            "may create an implicit PR",
+            "may open an implicit pull request",
+            "may open an implicit PR",
+            "may submit an implicit pull request",
+            "may submit an implicit PR",
+            "may make an implicit pull request",
+            "may make an implicit PR",
+            "may create an implicit commit",
+            "may perform an implicit commit",
+            "may make an implicit push",
+            "may perform an implicit push",
+            "may commit implicitly",
+            "may push implicitly",
+        ),
+        "contradictory implicit commit/push/PR authorization is forbidden",
+    ),
+    (
+        (
+            "may declare the parent task complete",
+            "may declare the entire parent task complete",
+            "may declare the broader parent task complete",
+            "may declare the parent task is complete",
+            "may declare the entire parent task is complete",
+            "may declare the broader parent task is complete",
+            "may claim the parent task is complete",
+            "may claim the entire parent task is complete",
+            "may claim the broader parent task is complete",
+            "may mark the parent task complete",
+            "may mark the parent task as complete",
+            "may mark the entire parent task complete",
+            "may mark the entire parent task as complete",
+            "may mark the broader parent task complete",
+        ),
+        "contradictory whole-parent completion authorization is forbidden",
+    ),
+    (
+        (
+            "this TOML proves runtime model, effort, and sandbox effectiveness",
+            "the TOML proves runtime model, effort, and sandbox effectiveness",
+            "this configuration proves runtime model, effort, and sandbox effectiveness",
+            "the configuration proves runtime model, effort, and sandbox effectiveness",
+            "this TOML proves runtime behavior",
+            "the TOML proves runtime behavior",
+            "this configuration proves runtime behavior",
+            "the configuration proves runtime behavior",
+            "this TOML proves observed runtime behavior",
+            "the TOML proves observed runtime behavior",
+            "this configuration proves observed runtime behavior",
+            "the configuration proves observed runtime behavior",
+            "this TOML proves effective runtime behavior",
+            "the TOML proves effective runtime behavior",
+            "this configuration proves effective runtime behavior",
+            "the configuration proves effective runtime behavior",
+            "this TOML proves observed runtime route",
+            "the TOML proves observed runtime route",
+            "this configuration proves observed runtime route",
+            "the configuration proves observed runtime route",
+            "this TOML proves effective runtime route",
+            "the TOML proves effective runtime route",
+            "this configuration proves effective runtime route",
+            "the configuration proves effective runtime route",
+            "this TOML proves observed route, model, effort, and sandbox effectiveness",
+            "the TOML proves observed route, model, effort, and sandbox effectiveness",
+            "this configuration proves observed route, model, effort, and sandbox effectiveness",
+            "the configuration proves observed route, model, effort, and sandbox effectiveness",
+            "this TOML proves effective route, model, effort, and sandbox effectiveness",
+            "the TOML proves effective route, model, effort, and sandbox effectiveness",
+            "this configuration proves effective route, model, effort, and sandbox effectiveness",
+            "the configuration proves effective route, model, effort, and sandbox effectiveness",
+            "this TOML proves effective runtime model, effort, and sandbox effectiveness",
+            "the TOML proves effective runtime model, effort, and sandbox effectiveness",
+            "this configuration proves effective runtime model, effort, and sandbox effectiveness",
+            "the configuration proves effective runtime model, effort, and sandbox effectiveness",
+        ),
+        "contradictory configured runtime-effectiveness claim is forbidden",
+    ),
+    (
+        (
+            "may mutate external systems",
+            "may modify external systems",
+            "may write to external systems",
+            "may alter external systems",
+            "may change external systems",
+            "may contact or mutate external systems",
+            "may call or mutate external systems",
+        ),
+        "contradictory external-system mutation permission is forbidden",
+    ),
+    (
+        (
+            "may contact external systems",
+            "may call external systems",
+            "may reach external systems",
+            "may communicate with external systems",
+            "may contact or call external systems",
+        ),
+        "contradictory external-system contact permission is forbidden",
+    ),
+)
+READ_ONLY_CONTRADICTORY_PERMISSION_ANCHORS = (
+    "may modify assigned files",
+    "may edit assigned files",
+    "may write assigned files",
+    "may edit repository files",
+    "may modify repository files",
+    "may write repository files",
+    "may edit source files",
+    "may modify source files",
+    "may write source files",
+    "may edit files in the repository",
+    "may modify files in the repository",
+    "may write files in the repository",
+)
+READ_ONLY_CONTRADICTORY_SANDBOX_ANCHORS = (
+    "this TOML declares OS-enforced read-only",
+    "the TOML declares OS-enforced read-only",
+    "this configuration declares OS-enforced read-only",
+    "the configuration declares OS-enforced read-only",
+    "this TOML makes the sandbox OS-enforced read-only",
+    "this configuration makes the sandbox OS-enforced read-only",
+    "this TOML guarantees OS-enforced read-only",
+    "the TOML guarantees OS-enforced read-only",
+    "this configuration guarantees OS-enforced read-only",
+    "the configuration guarantees OS-enforced read-only",
+    "this TOML claims OS-enforced read-only",
+    "the TOML claims OS-enforced read-only",
+    "this configuration claims OS-enforced read-only",
+    "the configuration claims OS-enforced read-only",
+    "this TOML asserts OS-enforced read-only",
+    "this configuration asserts OS-enforced read-only",
+)
+WRITER_CONTRADICTORY_PERMISSION_ANCHORS = (
+    "may edit unowned product implementation",
+    "may modify unassigned product implementation",
+    "may write unowned product code",
+    "may edit unassigned product implementation",
+    "may modify unowned product implementation",
+    "may mutate unowned product implementation",
+    "may mutate unassigned product implementation",
+    "may edit product implementation outside the named paths",
+    "may modify product implementation outside the named paths",
+    "may mutate product implementation outside the named paths",
+    "may edit product implementation outside named paths",
+    "may modify product implementation outside named paths",
+    "may mutate product implementation outside named paths",
+    "may edit product code outside the named paths",
+    "may modify product code outside the named paths",
+    "may mutate product code outside the named paths",
+    "may edit product code outside owned paths",
+    "may edit product code outside the owned paths",
+    "may modify product code outside owned paths",
+    "may mutate product code outside owned paths",
+    "may edit product implementation outside owned paths",
+    "may edit product implementation outside the owned paths",
+    "may modify product implementation outside owned paths",
+    "may mutate product implementation outside owned paths",
+    "may edit product code outside assigned paths",
+    "may edit product code outside the assigned paths",
+    "may modify product code outside assigned paths",
+    "may mutate product code outside assigned paths",
+    "may edit product implementation outside assigned paths",
+    "may edit product implementation outside the assigned paths",
+    "may modify product implementation outside assigned paths",
+    "may mutate product implementation outside assigned paths",
+    "may edit product code outside named paths",
+    "may edit product implementation outside named paths",
+)
+RESEARCHER_CONTRADICTORY_FALLBACK_ANCHORS = (
+    "content quality, task execution, or tool failure authorizes fallback",
+    "content, task, or tool failure authorizes fallback",
+    "content quality, task execution, or tool failure may authorize fallback",
+    "content, task, or tool failure may authorize fallback",
+    "content quality, task execution, or tool failure permits fallback",
+    "content, task, or tool failure permits fallback",
+    "content quality, task execution, or tool failure authorizes route switching",
+    "content, task, or tool failure authorizes route switching",
+    "failure authorizes route switching",
+    "failure may authorize route switching",
+    "failure permits route switching",
+)
+RESEARCHER_CONTRADICTORY_FURTHER_FALLBACK_ANCHORS = (
+    "authorizes further fallback",
+    "may authorize further fallback",
+    "may authorize a further fallback",
+    "permits another fallback",
+    "allows another fallback",
+)
+
+# These are configured requests from the accepted bundle, not a universal model
+# catalog and not evidence that a host can provide or effectively used the route.
+EXPECTED_AGENT_PINS = {
+    "architect": ("gpt-5.6-sol", "high", "read-only"),
+    "code_mapper": ("gpt-5.6-terra", "medium", "read-only"),
+    "docs_researcher_luna": ("gpt-5.6-luna", "max", "read-only"),
+    "docs_researcher_terra": ("gpt-5.6-terra", "high", "read-only"),
+    "gpu_reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "implementer": ("gpt-5.6-terra", "high", "workspace-write"),
+    "numerics_reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "parallelism_reviewer": ("gpt-5.6-sol", "xhigh", "read-only"),
+    "performance_profiler": ("gpt-5.6-terra", "high", "workspace-write"),
+    "reviewer": ("gpt-5.6-sol", "high", "read-only"),
+    "security_reviewer": ("gpt-5.6-sol", "max", "read-only"),
+    "test_validator": ("gpt-5.6-sol", "high", "read-only"),
+    "tester": ("gpt-5.6-terra", "medium", "workspace-write"),
+}
+
+# The registry deliberately names small source anchors and schema fields. It does
+# not attempt to decide whether arbitrary prose is semantically equivalent.
+ROLE_CONTRACT_ANCHORS = {
+    "architect": {
+        "evidence": (
+            "exact repository paths, symbols, interface signatures, callers, relevant tests",
+        ),
+        "stop": (
+            "missing evidence or ambiguity could change a public API, security boundary, compatibility promise, migration cost, or ownership assignment",
+        ),
+        "schema_fields": (
+            "ROLE",
+            "SUCCESS",
+            "SCOPE",
+            "INTERFACES",
+            "COMPATIBILITY",
+            "ALTERNATIVES",
+            "MIGRATION_ORDER",
+            "VALIDATION_PLAN",
+            "RISKS",
+            "EVIDENCE",
+            "OPEN_QUESTIONS",
+            "SANDBOX",
+        ),
+    },
+    "code_mapper": {
+        "evidence": (
+            "exact file paths, symbols, definitions, references, tests or fixtures",
+        ),
+        "stop": (
+            "requested call path cannot be established from repository evidence",
+        ),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "ENTRY_POINTS",
+            "FILES",
+            "SYMBOLS",
+            "CALL_FLOW",
+            "DATA_FLOW",
+            "TESTS",
+            "RISKS",
+            "CONFIDENCE",
+            "UNKNOWN_OR_STOP",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "CONFIDENCE: High, medium, or low per material path, with basis.",
+        ),
+    },
+    "docs_researcher_luna": {
+        "evidence": (
+            "exact official URLs or repository paths, document sections, version identifiers, publication/update dates",
+        ),
+        "stop": ("the requested native route is unobservable",),
+        "schema_fields": (
+            "ROLE",
+            "QUESTION",
+            "CLAIMS",
+            "SOURCES",
+            "VERSION_DATE",
+            "REQUESTED_ROUTE",
+            "OBSERVED_ROUTE",
+            "CONTRADICTIONS",
+            "UNKNOWNS",
+            "IMPLICATION",
+            "EVIDENCE",
+            "REPORT_SCOPE",
+            "STATUS_FAILURE_MATRIX",
+            "STATUS",
+            "FAILURE_CLASS",
+            "ROUTE_AUTHORITY",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": _researcher_exact_schema_lines(
+            "Luna/Max",
+            "STOP_FAILED + NATIVE_ROUTING_FAILURE: valid for an observed child handoff. For Luna, only the parent state machine may use the parent-owned evidence/classification to promote the overall chain to FALLBACK_PENDING; this child never spawns or authorizes Terra, fallback, or route switching.",
+            "Evidence and classification only; this role does not spawn or authorize Terra, fallback, or route switching.",
+        ),
+    },
+    "docs_researcher_terra": {
+        "evidence": (
+            "exact official URLs or repository paths, document sections, version identifiers, publication/update dates",
+        ),
+        "stop": ("the requested native route is unobservable",),
+        "schema_fields": (
+            "ROLE",
+            "QUESTION",
+            "CLAIMS",
+            "SOURCES",
+            "VERSION_DATE",
+            "REQUESTED_ROUTE",
+            "OBSERVED_ROUTE",
+            "CONTRADICTIONS",
+            "UNKNOWNS",
+            "IMPLICATION",
+            "EVIDENCE",
+            "REPORT_SCOPE",
+            "STATUS_FAILURE_MATRIX",
+            "STATUS",
+            "FAILURE_CLASS",
+            "ROUTE_AUTHORITY",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": _researcher_exact_schema_lines(
+            "Terra/high",
+            "STOP_FAILED + NATIVE_ROUTING_FAILURE: valid for an observed child handoff. For Terra, this is terminal STOP_FAILED and never promotes or authorizes fallback or a route switch.",
+            "Evidence and classification only; this role does not spawn or authorize any further fallback or route switch.",
+        ),
+    },
+    "gpu_reviewer": {
+        "evidence": ("correctness evidence separately from performance evidence",),
+        "stop": ("representative hardware context or profiler/benchmark evidence is missing or nonrepresentative",),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "CORRECTNESS_FINDINGS",
+            "PERFORMANCE_FINDINGS",
+            "SCALABILITY",
+            "HARDWARE_EVIDENCE",
+            "PROFILER_EVIDENCE",
+            "MEASUREMENT_GAPS",
+            "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP, FIX_FIRST, or RETHINK with basis.",
+        ),
+    },
+    "implementer": {
+        "evidence": (
+            "exact changed paths, symbols or sections, before/after behavior, commands and exit statuses",
+        ),
+        "stop": ("missing ownership",),
+        "schema_fields": (
+            "ROLE",
+            "OBJECTIVE",
+            "OWNED_PATHS",
+            "CHANGES",
+            "VERIFICATION",
+            "CONCURRENT_EDIT_HANDLING",
+            "ASSUMPTIONS",
+            "RISKS",
+            "OUT_OF_SCOPE",
+            "STATUS",
+        ),
+        "exact_schema_lines": (
+            "STATUS: READY_FOR_PARENT_REVIEW or STOP_ESCALATE.",
+        ),
+    },
+    "numerics_reviewer": {
+        "evidence": ("convergence tables, conservation residuals, and repeated-run results",),
+        "stop": ("initial/boundary conditions or the baseline are absent",),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "CONVERGENCE",
+            "CONSERVATION",
+            "STABILITY",
+            "TOLERANCE_PRECISION",
+            "REPRODUCIBILITY",
+            "FINDINGS",
+            "MEASUREMENT_GAPS",
+            "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP, FIX_FIRST, or RETHINK with basis.",
+        ),
+    },
+    "parallelism_reviewer": {
+        "evidence": (
+            "ownership variables, synchronization primitives, collective sites, teardown edges, stress commands, iteration counts",
+        ),
+        "stop": ("static inspection cannot establish safety",),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "OWNERSHIP_MODEL",
+            "HAPPENS_BEFORE",
+            "COLLECTIVES",
+            "TEARDOWN",
+            "STRESS_EVIDENCE",
+            "FINDINGS",
+            "MEASUREMENT_GAPS",
+            "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP, FIX_FIRST, or RETHINK with basis.",
+        ),
+    },
+    "performance_profiler": {
+        "evidence": (
+            "sample count, individual or aggregate timings, variance, profiler metrics, end-to-end measurements",
+        ),
+        "stop": ("baseline or build mode differs",),
+        "schema_fields": (
+            "ROLE",
+            "QUESTION",
+            "BASELINE",
+            "CANDIDATE",
+            "METRICS",
+            "VARIANCE",
+            "PROFILER_EVIDENCE",
+            "BOTTLENECK",
+            "IMPACT",
+            "GAPS",
+            "STATUS",
+            "EVIDENCE",
+        ),
+        "exact_schema_lines": (
+            "STATUS: READY_FOR_PARENT_REVIEW or STOP_ESCALATE.",
+        ),
+    },
+    "reviewer": {
+        "evidence": (
+            "relevant tests, commands, exit statuses, decisive output, failure reproduction or proof rationale",
+        ),
+        "stop": ("diff, changed-path ownership, or decisive verification evidence is missing",),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "FINDINGS",
+            "INVALID_OR_OUT_OF_SCOPE",
+            "VERIFICATION",
+            "MISSING_EVIDENCE",
+            "VERDICT",
+            "VERDICT_BASIS",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": ("VERDICT: SHIP | FIX_FIRST | RETHINK",),
+    },
+    "security_reviewer": {
+        "evidence": ("validation sites, authorization checks, sensitive sinks, attacker prerequisites",),
+        "stop": ("Stop before destructive or harmful external exploitation",),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "SOURCE_TO_SINK",
+            "ATTACKER_PREREQUISITES",
+            "AUTHORIZATION_BOUNDARY",
+            "FINDINGS",
+            "SAFE_VERIFICATION",
+            "MISSING_EVIDENCE",
+            "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SHIP | FIX_FIRST | RETHINK",
+        ),
+    },
+    "test_validator": {
+        "evidence": ("mapped path and false-positive analysis for every material requirement",),
+        "stop": ("requirements, actual test code, decisive results, or baseline behavior are unavailable",),
+        "schema_fields": (
+            "ROLE",
+            "REQUIREMENT_TO_TEST",
+            "FALSE_POSITIVES",
+            "UNCOVERED_PATHS",
+            "RESULTS",
+            "BLOCKING_GAPS",
+            "OPTIONAL_IMPROVEMENTS",
+            "VERDICT",
+            "EVIDENCE",
+            "SANDBOX",
+        ),
+        "exact_schema_lines": (
+            "VERDICT: SUPPORTED, GAPS, or STOP_UNVERIFIED with basis.",
+        ),
+    },
+    "tester": {
+        "evidence": (
+            "exact test/build commands, exit statuses, decisive output, revision, environment metadata, artifact paths, failure classification",
+        ),
+        "stop": ("a command would mutate unowned paths",),
+        "schema_fields": (
+            "ROLE",
+            "SCOPE",
+            "COMMANDS",
+            "RESULTS",
+            "ARTIFACTS",
+            "FAILURE_CLASSIFICATION",
+            "REPRODUCTION",
+            "REGRESSION_RISK",
+            "NEXT_ACTION",
+            "STATUS",
+            "EVIDENCE",
+        ),
+        "exact_schema_lines": (
+            "FAILURE_CLASSIFICATION: Implementation, environment, flaky, pre-existing, or inconclusive.",
+            "STATUS: READY_FOR_PARENT_REVIEW or STOP_ESCALATE.",
+        ),
+    },
+}
+
+RESEARCH_STATUS_FAILURE_ANCHORS = (
+    *RESEARCH_STATUS_FAILURE_MATRIX_LINES,
+    RESEARCH_STATUS_FAILURE_SCHEMA_LINES[-2],
+    RESEARCH_STATUS_FAILURE_SCHEMA_LINES[-1],
+    RESEARCH_REPORT_SCOPE_LINE,
+)
 RUNTIME_RECORD_FIXTURES = {
     "app-task.json",
     "cli-and-app-records.json",
@@ -171,20 +797,732 @@ class Validation:
         if not condition:
             self.errors.append(message)
 
-def parse_agent(path: Path, check: Validation) -> dict:
+def _compact(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _require_anchor(
+    errors: list[str],
+    label: str,
+    section_name: str,
+    section_text: str,
+    anchors: tuple[str, ...],
+    diagnostic: str,
+) -> None:
+    compact = _compact(section_text)
+    if not any(anchor in compact for anchor in anchors):
+        expected = " OR ".join(repr(anchor) for anchor in anchors)
+        errors.append(f"{label}: {diagnostic} in {section_name}: expected {expected}")
+
+
+def _require_exact_schema_line(
+    errors: list[str],
+    label: str,
+    section_text: str,
+    expected_line: str,
+    diagnostic: str = "structured handoff schema line is not exact",
+) -> None:
+    count = sum(line.strip() == expected_line for line in section_text.splitlines())
+    if count != 1:
+        errors.append(f"{label}: {diagnostic}: {expected_line}")
+
+
+def _operational_text(sections: Mapping[str, str]) -> tuple[str, ...]:
+    # Return independent section bodies.  A registered clause or introducer
+    # must never cross a hard heading boundary, including into RETURN SCHEMA.
+    return tuple(sections.get(section_name, "") for section_name in AGENT_CONTRACT_HEADING_NAMES)
+
+
+def _normalize_registered_text(text: str) -> str:
+    """Normalize only case, punctuation, and whitespace for closed literals."""
+    punctuation_normalized = re.sub(r"[^\w]+", " ", text.casefold(), flags=re.UNICODE)
+    return _compact(punctuation_normalized)
+
+
+REGISTERED_DIRECT_CLAUSE_PREFIXES = (
+    (),
+    ("this", "role"),
+    ("the", "role"),
+    ("this", "agent"),
+    ("the", "agent"),
+    ("this", "task"),
+    ("the", "task"),
+)
+REGISTERED_NEUTRAL_LABEL_PREFIXES = (
+    ("allowed",),
+    ("allowed", "action"),
+    ("allowed", "actions"),
+    ("allowed", "actions", "and", "tools"),
+    ("permission",),
+    ("permissions",),
+    ("operational", "rule"),
+    ("rule",),
+    ("policy",),
+    ("contract",),
+)
+# A cross-line non-direct context is registered only for an exact introducer
+# line ending in one of these delimiters.  A prefix match would let unrelated
+# prose such as "Never state something unrelated" hide a later direct clause.
+REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS = (
+    (("never", "state"), (":", "：", ";")),
+    (("do", "not", "say"), (":", "：", ";")),
+    (("never", "authorize"), (":", "：", ";")),
+    (("do", "not", "authorize"), (":", "：", ";")),
+    (("never", "claim"), (":", "：", ";")),
+    (("do", "not", "claim"), (":", "：", ";")),
+    (("must", "not", "say"), (":", "：", ";")),
+    (("must", "not", "authorize"), (":", "：", ";")),
+    (("quoted",), (":", "：", ";")),
+    (("quote",), (":", "：", ";")),
+    (("example",), (":", "：", ";")),
+)
+REGISTERED_LIST_MARKER_RE = re.compile(
+    r"^\s*(?:[-*+]|(?:\d+|[A-Za-z])[.)])(?:[ \t]+|$)"
+    r"(?:\[[ xX]\](?:[ \t]+|$))?"
+)
+REGISTERED_SEPARATOR_RE = re.compile(r"[.!?;:：—–]")
+
+
+def _strip_registered_list_marker(line: str) -> str:
+    return REGISTERED_LIST_MARKER_RE.sub("", line, count=1)
+
+
+def _registered_tokens(text: str) -> tuple[str, ...]:
+    return tuple(_normalize_registered_text(_strip_registered_list_marker(text)).split())
+
+
+def _registered_neutral_label_remainder(text: str) -> tuple[str, ...] | None:
+    stripped = _strip_registered_list_marker(text)
+    for match in re.finditer(r"[:：—–]", stripped):
+        prefix = tuple(_normalize_registered_text(stripped[: match.start()]).split())
+        if prefix not in REGISTERED_NEUTRAL_LABEL_PREFIXES:
+            continue
+        remainder = _registered_tokens(stripped[match.end() :])
+        if remainder:
+            return remainder
+    return None
+
+
+def _registered_separator_remainders(
+    text: str, continuation_lines: tuple[str, ...] = ()
+) -> tuple[tuple[str, ...], ...]:
+    """Return direct candidates after registered punctuation separators.
+
+    This is a closed tokenizer rule: a suffix is considered independently so
+    a completed, unrelated prefix cannot hide a registered direct clause. An
+    exact negating/quoted introducer keeps its immediate suffix quoted instead.
+    """
+    stripped = _strip_registered_list_marker(text)
+    remainders: list[tuple[str, ...]] = []
+    for match in REGISTERED_SEPARATOR_RE.finditer(stripped):
+        prefix = stripped[: match.start()].strip()
+        delimiter = match.group(0)
+        if any(
+            delimiter in delimiters
+            and _registered_tokens(prefix) == introducer
+            for introducer, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS
+        ):
+            continue
+        remainder_text = stripped[match.end() :]
+        if not REGISTERED_SEPARATOR_RE.search(remainder_text):
+            for continuation in continuation_lines:
+                remainder_text = f"{remainder_text} {continuation.strip()}".strip()
+                if REGISTERED_SEPARATOR_RE.search(remainder_text):
+                    break
+        remainder = _registered_tokens(remainder_text)
+        if remainder:
+            remainders.append(remainder)
+    return tuple(remainders)
+
+
+def _registered_context_before_line(lines: list[str], line_index: int) -> bool:
+    previous = line_index - 1
+    if previous < 0 or not lines[previous].strip():
+        return False
+    previous_line = _strip_registered_list_marker(lines[previous]).strip()
+    for prefix, delimiters in REGISTERED_NON_DIRECT_CONTEXT_INTRODUCERS:
+        for delimiter in delimiters:
+            if not previous_line.endswith(delimiter):
+                continue
+            introducer = previous_line[: -len(delimiter)].strip()
+            if _registered_tokens(introducer) == prefix:
+                return True
+    return False
+
+
+def _registered_clauses(text: str) -> tuple[tuple[str, ...], ...]:
+    """Return bounded clauses while preserving physical and semantic context."""
+    clauses: list[tuple[str, ...]] = []
+    lines = text.splitlines()
+    paragraphs: list[list[tuple[int, str]]] = []
+    paragraph: list[tuple[int, str]] = []
+    for line_index, line in enumerate(lines):
+        if line.strip():
+            paragraph.append((line_index, line))
+        elif paragraph:
+            paragraphs.append(paragraph)
+            paragraph = []
+    if paragraph:
+        paragraphs.append(paragraph)
+
+    for paragraph in paragraphs:
+        blocks: list[list[tuple[int, str]]] = []
+        block: list[tuple[int, str]] = []
+        for line_index, line in paragraph:
+            if REGISTERED_LIST_MARKER_RE.match(line):
+                if block:
+                    blocks.append(block)
+                block = [(line_index, _strip_registered_list_marker(line))]
+            else:
+                block.append((line_index, line))
+        if block:
+            blocks.append(block)
+
+        for block in blocks:
+            if _registered_context_before_line(lines, block[0][0]):
+                continue
+            wrapped_text = " ".join(line.strip() for _, line in block)
+            for raw_clause in re.split(r"[.!?]+", wrapped_text):
+                normalized = _normalize_registered_text(raw_clause)
+                if normalized:
+                    clauses.append(tuple(normalized.split()))
+                neutral_remainder = _registered_neutral_label_remainder(raw_clause)
+                if neutral_remainder is not None:
+                    clauses.append(neutral_remainder)
+
+        for block in blocks:
+            block_end = block[-1][0]
+            for line_index, line in block:
+                continuation_lines = tuple(
+                    lines[next_index]
+                    for next_index in range(line_index + 1, block_end + 1)
+                )
+                if _registered_context_before_line(lines, line_index):
+                    # The introducer protects only the immediate clause. Keep
+                    # scanning suffixes and their ordinary wrapped continuations.
+                    clauses.extend(
+                        _registered_separator_remainders(line, continuation_lines)
+                    )
+                    continue
+                neutral_remainder = _registered_neutral_label_remainder(line)
+                clauses.append(
+                    neutral_remainder
+                    if neutral_remainder is not None
+                    else _registered_tokens(line)
+                )
+                clauses.extend(
+                    _registered_separator_remainders(line, continuation_lines)
+                )
+    return tuple(clauses)
+
+
+def _registered_literal_matches(clause: tuple[str, ...], literal: tuple[str, ...]) -> bool:
+    return any(
+        clause[: len(prefix) + len(literal)] == prefix + literal
+        for prefix in REGISTERED_DIRECT_CLAUSE_PREFIXES
+    )
+
+
+def _reject_registered_literals(
+    errors: list[str],
+    label: str,
+    text: str | tuple[str, ...],
+    literals: tuple[str, ...],
+    diagnostic: str,
+) -> None:
+    section_texts = (text,) if isinstance(text, str) else text
+    clauses = tuple(
+        clause
+        for section_text in section_texts
+        for clause in _registered_clauses(section_text)
+    )
+    for literal in literals:
+        normalized_literal = tuple(_normalize_registered_text(literal).split())
+        if any(_registered_literal_matches(clause, normalized_literal) for clause in clauses):
+            errors.append(f"{label}: {diagnostic}: {literal}")
+
+
+def _parse_agent_sections(text: str, label: str) -> tuple[dict[str, str], list[str]]:
+    """Parse the registered ten-heading source dialect without classifying prose."""
+    errors: list[str] = []
+    lines = text.splitlines()
+    heading_re = re.compile(r"^(?P<marks>#{1,6})(?:[ \t]+(?P<title>.*?))?[ \t]*$")
+    headings: list[tuple[str, int]] = []
+    for index, line in enumerate(lines):
+        candidate = line if line.startswith("#") else line.lstrip() if line.lstrip().startswith("#") else None
+        if candidate is None:
+            continue
+        match = heading_re.fullmatch(line)
+        if match is None:
+            errors.append(f"{label}: malformed developer_instructions heading at line {index + 1}: {line!r}")
+            continue
+        headings.append((line, index))
+        if line not in AGENT_CONTRACT_HEADINGS:
+            errors.append(f"{label}: unexpected or malformed developer_instructions heading at line {index + 1}: {line!r}")
+
+    exact_headings = [line for line, _ in headings if line in AGENT_CONTRACT_HEADINGS]
+    for heading in AGENT_CONTRACT_HEADINGS:
+        count = exact_headings.count(heading)
+        if count == 0:
+            errors.append(f"{label}: missing required contract heading: {heading}")
+        elif count > 1:
+            errors.append(f"{label}: duplicate required contract heading: {heading}")
+    if exact_headings != list(AGENT_CONTRACT_HEADINGS):
+        errors.append(
+            f"{label}: required contract headings must appear exactly once in exact order; "
+            f"observed {exact_headings!r}"
+        )
+
+    sections: dict[str, str] = {}
+    for heading in AGENT_CONTRACT_HEADINGS:
+        matching = [index for line, index in headings if line == heading]
+        if len(matching) != 1:
+            continue
+        start = matching[0]
+        end = next((index for _, index in headings if index > start), len(lines))
+        body = "\n".join(lines[start + 1 : end])
+        section_name = heading.removeprefix("# ")
+        sections[section_name] = body
+        if not _compact(body):
+            errors.append(f'{label}: section "{section_name}" must have a nonempty body')
+    return sections, errors
+
+
+def _validate_common_agent_semantics(
+    label: str, name: str, sections: Mapping[str, str], errors: list[str]
+) -> None:
+    ownership = sections.get("OWNERSHIP", "")
+    forbidden = sections.get("FORBIDDEN ACTIONS", "")
+    evidence = sections.get("EVIDENCE", "")
+    stop = sections.get("STOP / ESCALATE", "")
+    return_schema = sections.get("RETURN SCHEMA", "")
+    operational_text = _operational_text(sections)
+
+    for literals, diagnostic in GLOBAL_CONTRADICTORY_PERMISSION_RULES:
+        _reject_registered_literals(errors, label, operational_text, literals, diagnostic)
+
+    _require_anchor(
+        errors,
+        label,
+        "OWNERSHIP",
+        ownership,
+        (
+            "preserve unrelated and concurrent edits",
+            "preserve unrelated or concurrent edits",
+            "Preserve unrelated and concurrent edits",
+        ),
+        "registered ownership/concurrent-edit anchor missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "FORBIDDEN ACTIONS",
+        forbidden,
+        ("implicit commit, push, or PR",),
+        "registered implicit commit/push/PR prohibition missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "FORBIDDEN ACTIONS",
+        forbidden,
+        ("parent task complete",),
+        "registered whole-parent completion prohibition missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "FORBIDDEN ACTIONS",
+        forbidden,
+        ("effectiveness from TOML", "effectiveness from this TOML"),
+        "registered configured-model/runtime-effectiveness disclaimer missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "STOP / ESCALATE",
+        stop,
+        ("Stop and escalate", "Stop before"),
+        "registered stop/escalate handoff anchor missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "RETURN SCHEMA",
+        return_schema,
+        (f"ROLE: {name}",),
+        f"structured handoff role field missing: ROLE: {name}",
+    )
+    schema_fields = re.findall(r"(?m)^[ \t]*([A-Z][A-Z0-9_]*)\s*:", return_schema)
+    if len(schema_fields) < 3:
+        errors.append(f"{label}: structured handoff schema must expose at least three named fields")
+
+
+def _validate_read_only_agent_semantics(
+    label: str, sections: Mapping[str, str], errors: list[str]
+) -> None:
+    ownership = sections.get("OWNERSHIP", "")
+    evidence = sections.get("EVIDENCE", "")
+    _reject_registered_literals(
+        errors,
+        label,
+        _operational_text(sections),
+        READ_ONLY_CONTRADICTORY_PERMISSION_ANCHORS,
+        "contradictory read-only permission is forbidden",
+    )
+    _reject_registered_literals(
+        errors,
+        label,
+        _operational_text(sections),
+        READ_ONLY_CONTRADICTORY_SANDBOX_ANCHORS,
+        "contradictory OS-enforced read-only sandbox claim is forbidden",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "OWNERSHIP",
+        ownership,
+        ("behaviorally read-only: do not mutate",),
+        "read-only behavioral write prohibition missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "OWNERSHIP",
+        ownership,
+        ("Own only",),
+        "read-only ownership boundary missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "EVIDENCE",
+        evidence,
+        ("requested sandbox policy separately from observed sandbox policy",),
+        "requested-versus-observed sandbox distinction missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "EVIDENCE",
+        evidence,
+        ("permission profile",),
+        "observed sandbox permission-profile field missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "EVIDENCE",
+        evidence,
+        ("unknown when unobserved", "unobserved values unknown", "observation is unavailable, say unknown"),
+        "unknown-if-unobserved sandbox rule missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "EVIDENCE",
+        evidence,
+        ("OS-enforced read-only",),
+        "TOML cannot claim OS-enforced read-only missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "EVIDENCE",
+        evidence,
+        ("TOML",),
+        "read-only runtime/configuration disclaimer missing",
+    )
+    return_schema = sections.get("RETURN SCHEMA", "")
+    for field in ("EVIDENCE", "SANDBOX"):
+        _require_anchor(
+            errors,
+            label,
+            "RETURN SCHEMA",
+            return_schema,
+            (f"{field}:",),
+            f"read-only structured handoff field missing: {field}",
+        )
+
+
+def _validate_writer_agent_semantics(
+    label: str, name: str, sections: Mapping[str, str], errors: list[str]
+) -> None:
+    ownership = sections.get("OWNERSHIP", "")
+    evidence = sections.get("EVIDENCE", "")
+    _reject_registered_literals(
+        errors,
+        label,
+        _operational_text(sections),
+        WRITER_CONTRADICTORY_PERMISSION_ANCHORS,
+        "contradictory unowned-product write permission is forbidden",
+    )
+    writer_anchors = {
+        "implementer": (
+            ("Write only the explicitly assigned paths or artifacts", "writer ownership/artifact limit"),
+            ("Do not change APIs, ABI, tests, tooling, manifests, or product code outside the named paths", "unowned product edit prohibition"),
+            ("Report requested versus observed runtime routing or sandbox only when observable", "requested-versus-observed runtime distinction"),
+        ),
+        "performance_profiler": (
+            ("Write only explicitly assigned benchmark, profiler, trace, log, or temporary measurement artifacts", "writer ownership/artifact limit"),
+            ("Never mutate product implementation or unassigned tests/configuration", "unowned product edit prohibition"),
+            ("Runtime model/effort and sandbox are requested configuration only unless observed independently", "requested-versus-observed runtime distinction"),
+        ),
+        "tester": (
+            ("Write only explicitly assigned test, reproduction, log, or diagnostic artifacts", "writer ownership/artifact limit"),
+            ("Never mutate product implementation or unassigned tests/configuration", "unowned product edit prohibition"),
+            ("requested workspace-write mode is configuration only", "requested-versus-observed runtime distinction"),
+        ),
+    }
+    ownership_anchor, ownership_diagnostic = writer_anchors[name][0]
+    _require_anchor(errors, label, "OWNERSHIP", ownership, (ownership_anchor,), ownership_diagnostic)
+    product_anchor, product_diagnostic = writer_anchors[name][1]
+    product_section_name = "FORBIDDEN ACTIONS" if name == "implementer" else "OWNERSHIP"
+    product_section = sections.get(product_section_name, "")
+    _require_anchor(errors, label, product_section_name, product_section, (product_anchor,), product_diagnostic)
+    route_anchor, route_diagnostic = writer_anchors[name][2]
+    _require_anchor(errors, label, "EVIDENCE", evidence, (route_anchor,), route_diagnostic)
+
+
+def _validate_role_specific_semantics(
+    label: str, name: str, sections: Mapping[str, str], errors: list[str]
+) -> None:
+    registered = ROLE_CONTRACT_ANCHORS.get(name)
+    if registered is None:
+        return
+    _require_anchor(
+        errors,
+        label,
+        "EVIDENCE",
+        sections.get("EVIDENCE", ""),
+        registered["evidence"],
+        "registered role-specific evidence anchor missing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "STOP / ESCALATE",
+        sections.get("STOP / ESCALATE", ""),
+        registered["stop"],
+        "registered role-specific stop anchor missing",
+    )
+    return_schema = sections.get("RETURN SCHEMA", "")
+    schema_fields = tuple(re.findall(r"(?m)^[ \t]*([A-Z][A-Z0-9_]*)\s*:", return_schema))
+    expected_schema_fields = tuple(registered["schema_fields"])
+    if schema_fields != expected_schema_fields:
+        errors.append(
+            f"{label}: registered structured handoff schema fields must exactly match "
+            f"the registered order: expected {expected_schema_fields!r}; observed {schema_fields!r}"
+        )
+    for field in expected_schema_fields:
+        if field not in schema_fields:
+            errors.append(f"{label}: registered structured handoff field missing: {field}")
+    for exact_line in registered.get("exact_schema_lines", ()):
+        _require_exact_schema_line(errors, label, return_schema, exact_line)
+
+
+def _validate_researcher_semantics(
+    label: str, name: str, sections: Mapping[str, str], errors: list[str]
+) -> None:
+    return_schema = sections.get("RETURN SCHEMA", "")
+    stop = sections.get("STOP / ESCALATE", "")
+    operational_text = _operational_text(sections)
+    _reject_registered_literals(
+        errors,
+        label,
+        operational_text,
+        RESEARCHER_CONTRADICTORY_FALLBACK_ANCHORS,
+        "contradictory failure-authorized fallback/route-switch permission is forbidden",
+    )
+    _reject_registered_literals(
+        errors,
+        label,
+        operational_text,
+        RESEARCHER_CONTRADICTORY_FURTHER_FALLBACK_ANCHORS,
+        "contradictory further-fallback permission is forbidden",
+    )
+    for anchor in RESEARCH_STATUS_FAILURE_ANCHORS:
+        _require_exact_schema_line(
+            errors,
+            label,
+            return_schema,
+            anchor,
+            "researcher status/failure matrix anchor missing",
+        )
+    _require_anchor(
+        errors,
+        label,
+        "RETURN SCHEMA",
+        return_schema,
+        ("ROUTE_AUTHORITY: Evidence and classification only; this role does not spawn or authorize",),
+        "researcher route authority must remain evidence-only and non-authorizing",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "RETURN SCHEMA",
+        return_schema,
+        ("REPORT_SCOPE: Observed or returnable child report after a child attempt exists; a pre-spawn native rejection is parent-owned raw evidence and has no child handoff.",),
+        "researcher raw pre-spawn rejection must remain parent-owned with no child handoff",
+    )
+    requested_route = "Luna/Max" if name.endswith("_luna") else "Terra/high"
+    _require_anchor(
+        errors,
+        label,
+        "RETURN SCHEMA",
+        return_schema,
+        (f"REQUESTED_ROUTE: {requested_route}",),
+        "researcher requested route field is not exact",
+    )
+    _require_anchor(
+        errors,
+        label,
+        "RETURN SCHEMA",
+        return_schema,
+        ("OBSERVED_ROUTE: Observed native route, or unknown when unobserved.",),
+        "researcher requested-versus-observed route distinction missing",
+    )
+    if name.endswith("_luna"):
+        _require_anchor(
+            errors,
+            label,
+            "STOP / ESCALATE",
+            stop,
+            ("Content quality, task execution, or tool failure does not authorize fallback or route switching.",),
+            "Luna content/task/tool failure must not authorize fallback",
+        )
+        _require_anchor(
+            errors,
+            label,
+            "RETURN SCHEMA",
+            return_schema,
+            ("For Luna, only the parent state machine may use the parent-owned evidence/classification to promote the overall chain to FALLBACK_PENDING; this child never spawns or authorizes Terra, fallback, or route switching.",),
+            "Luna route authority must remain parent-owned",
+        )
+    else:
+        _require_anchor(
+            errors,
+            label,
+            "STOP / ESCALATE",
+            stop,
+            ("content, task, or tool failure must be returned as a bounded stop",),
+            "Terra content/task/tool failure must remain terminal",
+        )
+        _require_anchor(
+            errors,
+            label,
+            "RETURN SCHEMA",
+            return_schema,
+            ("For Terra, this is terminal STOP_FAILED and never promotes or authorizes fallback or a route switch.",),
+            "Terra route authority must remain terminal",
+        )
+
+
+def agent_contract_violations(data: object, filename: str) -> list[str]:
+    """Return deterministic violations for one parsed agent contract."""
+    label = str(filename)
+    if not isinstance(data, Mapping):
+        return [f"{label}: top-level TOML value must be a table"]
+    errors: list[str] = []
+    keys = set(data)
+    for key in sorted(REQUIRED_AGENT_KEYS - keys):
+        errors.append(f"{label}: missing top-level key: {key}")
+    for key in sorted(keys - REQUIRED_AGENT_KEYS):
+        errors.append(f"{label}: unexpected top-level key: {key}")
+    for key in sorted(keys & REQUIRED_AGENT_KEYS):
+        if type(data[key]) is not str:
+            errors.append(f"{label}: top-level key {key} must be a string")
+    if any(type(data.get(key)) is not str for key in REQUIRED_AGENT_KEYS):
+        return errors
+
+    name = data["name"]
+    stem = Path(label).stem
+    if stem != name:
+        errors.append(f"{label}: filename stem {stem!r} must equal agent name {name!r}")
+    if name not in EXPECTED_AGENT_PINS:
+        errors.append(f"{label}: agent name {name!r} is not one of the 13 registered roles")
+    else:
+        expected_model, expected_effort, expected_sandbox = EXPECTED_AGENT_PINS[name]
+        configured = (
+            ("model", data["model"], expected_model, "configured model request"),
+            ("model_reasoning_effort", data["model_reasoning_effort"], expected_effort, "configured reasoning-effort request"),
+            ("sandbox_mode", data["sandbox_mode"], expected_sandbox, "configured sandbox request"),
+        )
+        for field, actual, expected, label_name in configured:
+            if actual != expected:
+                errors.append(
+                    f"{label}: role {name} {label_name} must be {expected!r}; "
+                    f"configured value is {actual!r}. This is capability-dependent configuration, "
+                    "not runtime availability or effective-route evidence."
+                )
+    if not data["description"].strip():
+        errors.append(f"{label}: role {name} has an empty description")
+    instructions = data["developer_instructions"]
+    if not instructions.strip():
+        errors.append(f"{label}: role {name} has empty developer instructions")
+        return errors
+    sections, section_errors = _parse_agent_sections(instructions, label)
+    errors.extend(section_errors)
+    if set(sections) != set(AGENT_CONTRACT_HEADING_NAMES):
+        return errors
+
+    _validate_common_agent_semantics(label, name, sections, errors)
+    if name in READ_ONLY_AGENTS:
+        _validate_read_only_agent_semantics(label, sections, errors)
+    if name in WRITER_AGENTS:
+        _validate_writer_agent_semantics(label, name, sections, errors)
+    _validate_role_specific_semantics(label, name, sections, errors)
+    if name in {"docs_researcher_luna", "docs_researcher_terra"}:
+        _validate_researcher_semantics(label, name, sections, errors)
+    return errors
+
+
+def agent_file_violations(path: Path) -> list[str]:
+    """Read and validate one concrete TOML, preserving path-specific diagnostics."""
     try:
         data = tomllib.loads(path.read_text(encoding="utf-8"))
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        check.errors.append(f"invalid agent TOML {path}: {exc}")
-        return {}
-    missing = REQUIRED_AGENT_KEYS - set(data)
-    check.require(not missing, f"{path} missing keys: {sorted(missing)}")
-    check.require(data.get("model") in ALLOWED_MODELS, f"{path} has unsupported model: {data.get('model')}")
-    check.require(data.get("model_reasoning_effort") in ALLOWED_EFFORTS, f"{path} has unsupported effort: {data.get('model_reasoning_effort')}")
-    check.require(data.get("sandbox_mode") in ALLOWED_SANDBOX, f"{path} has unsupported sandbox: {data.get('sandbox_mode')}")
-    check.require(bool(str(data.get("description", "")).strip()), f"{path} has an empty description")
-    check.require(bool(str(data.get("developer_instructions", "")).strip()), f"{path} has empty developer instructions")
-    return data
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        return [f"invalid agent TOML {path}: {exc}"]
+    return agent_contract_violations(data, str(path))
+
+
+def agent_directory_violations(common_dir: Path) -> list[str]:
+    """Validate the fixed 13-agent directory; suitable for focused offline tests."""
+    if not common_dir.is_dir():
+        return [f"missing common agent directory: {common_dir}"]
+    paths = sorted(common_dir.glob("*.toml"))
+    errors: list[str] = []
+    if len(paths) != 13:
+        errors.append(f"common agent set must contain exactly 13 concrete TOMLs, found {len(paths)}")
+    actual_files = {path.name for path in paths}
+    for filename in sorted(EXPECTED_COMMON_FILES - actual_files):
+        errors.append(f"missing registered agent file: {common_dir / filename}")
+    for filename in sorted(actual_files - EXPECTED_COMMON_FILES):
+        errors.append(f"unexpected agent file: {common_dir / filename}")
+    parsed_names: dict[str, list[Path]] = {}
+    for path in paths:
+        if not path.is_file() or path.is_symlink():
+            errors.append(f"agent path is not a concrete regular TOML file: {path}")
+            continue
+        errors.extend(agent_file_violations(path))
+        try:
+            data = tomllib.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            continue
+        name = data.get("name") if isinstance(data, Mapping) else None
+        if isinstance(name, str):
+            parsed_names.setdefault(name, []).append(path)
+    for name, name_paths in sorted(parsed_names.items()):
+        if len(name_paths) > 1:
+            errors.append(
+                f"duplicate configured agent name {name!r}: {', '.join(str(path) for path in name_paths)}"
+            )
+    names = set(parsed_names)
+    for name in sorted(EXPECTED_COMMON - names):
+        errors.append(f"missing registered agent name: {name}")
+    for name in sorted(names - EXPECTED_COMMON):
+        errors.append(f"unexpected configured agent name: {name}")
+    return errors
 
 def _frontmatter(text: str) -> tuple[str | None, list[str]]:
     match = re.match(r"\A---\n(.*?)\n---\n", text, re.DOTALL)
@@ -593,24 +1931,7 @@ def validate_agents(root: Path, check: Validation) -> None:
         root / "payload/agents/profiles/terra-fallback/docs_researcher.toml",
     ):
         check.require(not obsolete.exists() and not obsolete.is_symlink(), f"obsolete profile payload must be absent: {obsolete}")
-    common_dir = root / "payload/agents/common"
-    common_paths = sorted(common_dir.glob("*.toml"))
-    common_data = {path.name: parse_agent(path, check) for path in common_paths}
-    check.require(set(common_data) == EXPECTED_COMMON_FILES, f"common agent files mismatch: {sorted(common_data)}")
-    common_names = [str(item.get("name")) for item in common_data.values() if item]
-    check.require(len(common_paths) == 13, f"common agent set must contain exactly 13 TOMLs, found {len(common_paths)}")
-    check.require(len(common_names) == len(set(common_names)), f"common agent names must be unique: {sorted(common_names)}")
-    check.require(set(common_names) == EXPECTED_COMMON, f"common agent names mismatch: {sorted(common_names)}")
-    pins = {
-        "docs_researcher_luna.toml": ("docs_researcher_luna", "gpt-5.6-luna", "max"),
-        "docs_researcher_terra.toml": ("docs_researcher_terra", "gpt-5.6-terra", "high"),
-    }
-    for filename, (name, model, effort) in pins.items():
-        data = common_data.get(filename, {})
-        check.require(data.get("name") == name, f"{filename} must provide {name}")
-        check.require(data.get("model") == model, f"{filename} must pin {model}")
-        check.require(data.get("model_reasoning_effort") == effort, f"{filename} must use {effort} effort")
-        check.require(data.get("sandbox_mode") == "read-only", f"{filename} must use read-only sandbox")
+    check.errors.extend(agent_directory_violations(root / "payload/agents/common"))
 
 
 def _compile_required(root: Path, check: Validation, helper: str, focused_test: str, label: str) -> None:

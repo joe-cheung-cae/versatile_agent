@@ -7,6 +7,7 @@ python3 "$bundle_root/tests/test_runtime_records.py"
 python3 "$bundle_root/tests/test_routing_state.py"
 python3 "$bundle_root/tests/test_manifest_audit.py"
 python3 "$bundle_root/tests/test_skill_contract.py"
+python3 "$bundle_root/tests/test_agent_contract.py"
 python3 "$bundle_root/tests/test_merge_config.py"
 "$bundle_root/tests/test_install.sh"
 
